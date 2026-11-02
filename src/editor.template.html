@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gerador de Cardápios</title>
+<style>
+/*{{CSS}}*/
+</style>
+</head>
+<body>
+
+<header class="top">
+  <b>🍽 Gerador de Cardápios</b>
+  <button id="btn-home" class="btn ghost sm" hidden>← Restaurantes</button>
+  <span id="cur-name" class="cur"></span>
+  <span class="sp"></span>
+  <button id="btn-folder" class="btn ghost sm folder" hidden></button>
+  <span id="status" class="status"></span>
+  <button id="btn-save" class="btn ghost" hidden title="Ctrl+S">Salvar</button>
+  <button id="btn-backup" class="btn ghost" hidden title="Baixa um arquivo .json com tudo (imagens incluídas)">Backup .json</button>
+  <button id="btn-export" class="btn primary" hidden>⬇ Exportar ZIP</button>
+</header>
+
+<section id="view-home">
+  <div class="home">
+    <h1>Seus restaurantes</h1>
+    <p class="lead">Crie, edite e exporte cardápios digitais estáticos. Tudo fica salvo neste navegador — use o backup de vez em quando.</p>
+    <p id="folder-hint" class="hint" hidden>💡 <b>Dica:</b> clique em <b>📁 Conectar pasta</b> (canto superior) para salvar cada restaurante numa pasta do seu computador — já pronta para commitar no GitHub. Funciona no Chrome e no Edge.</p>
+    <div class="acts">
+      <button id="btn-new" class="btn primary">+ Novo restaurante</button>
+      <button id="btn-import" class="btn">Importar (.zip / .json)</button>
+      <button id="btn-backup-all" class="btn">Backup de todos (.json)</button>
+      <input id="file-import" type="file" accept=".zip,.json,application/json,application/zip" hidden multiple>
+    </div>
+    <div id="home-list" class="grid"></div>
+  </div>
+</section>
+
+<section id="view-editor" hidden>
+  <aside class="side">
+    <nav id="tabsbar" class="tabsbar"></nav>
+    <div id="panel" class="panel"></div>
+  </aside>
+  <main class="prev">
+    <div class="pbar">
+      <div class="seg" id="device">
+        <button data-d="mobile" class="on">📱 Celular</button>
+        <button data-d="desktop">🖥 Desktop</button>
+      </div>
+      <span style="flex:1"></span>
+      <button id="btn-newtab" class="btn sm">↗ Abrir em nova aba</button>
+    </div>
+    <div class="stage"><div id="frame" class="frame mobile"><iframe id="preview" title="Pré-visualização" sandbox="allow-scripts allow-same-origin allow-popups"></iframe></div></div>
+  </main>
+</section>
+
+<dialog id="dlg"><form method="dialog" id="dlg-form"></form></dialog>
+<div id="toast"></div>
+
+<script>
+/*{{JSZIP}}*/
+</script>
+<script>
+/*{{GENERATOR}}*/
+</script>
+<script>
+/*{{APP}}*/
+</script>
+</body>
+</html>
