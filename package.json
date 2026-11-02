@@ -9,7 +9,7 @@
     "dev:web": "npm run build:web && wrangler dev",
     "deploy": "npm run build:web && wrangler deploy",
     "test": "npm run test:sql && npm run test:e2e",
-    "test:sql": "node test/sql.mjs",
+    "test:sql": "node test/sql.mjs && node test/seguranca-admin.mjs",
     "test:e2e": "node build.mjs && node test/plataforma.mjs && node test/publicar.mjs && node test/smoke.mjs",
     "test:worker": "node test/worker.mjs",
     "setup:tests": "playwright install chromium"

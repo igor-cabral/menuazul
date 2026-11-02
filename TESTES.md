@@ -3,7 +3,7 @@
 ```
 npm ci
 npx playwright install chromium    # uma vez só (atalho: npm run setup:tests)
-npm run test:sql                   # regras do banco (PGlite), não usa navegador
+npm run test:sql                   # regras do banco + segurança do administrador (PGlite), sem navegador
 npm run test:e2e                   # interface no Chromium: plataforma, publicar, editor
 npm run test:worker                # dist/ servido pelo wrangler dev (porta 8799)
 npm test                           # test:sql + test:e2e

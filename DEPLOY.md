@@ -10,13 +10,47 @@ Uma instalação serve todos os restaurantes:
 | `.../nome-do-restaurante/menu` | Cardápio público, sem pedido por mesa |
 
 ## 1. Supabase (uma vez)
+A ordem importa: o cadastro público é desligado **antes** de existir qualquer conta, e a conta de administrador é criada por você no painel (nunca pela internet).
+
 1. Crie um projeto em supabase.com.
-2. **Authentication > Users > Add user**: seu e-mail + senha, marque *Auto Confirm User*.
-3. **SQL Editor**: cole o conteúdo de `sql/schema.sql` e rode.
-4. No mesmo editor, rode (com o seu e-mail):
-   `insert into plataforma_admins (user_id) select id from auth.users where email = 'voce@exemplo.com';`
-5. **Project Settings > API**: copie *Project URL* e a chave *anon/publishable* (nunca a service_role).
-6. Authentication > Sign In / Providers: desligue *Allow new users to sign up* (ninguém além de você cria conta).
+2. **Desligue o cadastro público.** Authentication > Sign In / Providers: desmarque *Allow new users to sign up*. Confira também que *Allow anonymous sign-ins* está desligado. (A chave pública do `web/config.js` é visível para qualquer pessoa; com o cadastro ligado, qualquer um poderia criar contas no seu projeto.)
+3. **SQL Editor**: cole o conteúdo de `sql/schema.sql` e rode (deve responder `Success. No rows returned`). É seguro rodar de novo.
+4. **Crie a conta do administrador.** Authentication > Users > Add user > *Create new user*: seu e-mail e uma senha longa (20 caracteres ou mais, de um gerenciador de senhas). Marque *Auto Confirm User*. Não use convite nem link mágico. Essa conta ainda **não** é administradora: criar uma conta não dá acesso a nada.
+5. **Confira o estado antes de promover** (só leitura). No SQL Editor:
+   ```sql
+   select
+     (select count(*) from public.plataforma_admins) as admins,
+     has_table_privilege('anon', 'public.plataforma_admins', 'select,insert,update,delete') as anon_acessa,
+     has_table_privilege('authenticated', 'public.plataforma_admins', 'select,insert,update,delete') as auth_acessa,
+     (select relrowsecurity from pg_class where oid = 'public.plataforma_admins'::regclass) as rls,
+     (select count(*) from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = 'auth' and c.relname = 'users' and not t.tgisinternal) as triggers_em_auth_users,
+     (select count(*) from auth.users) as contas_no_auth;
+   ```
+   O resultado esperado é `0 | false | false | true | 0 | 1`. Se vier diferente, **pare** e investigue antes de continuar (por exemplo, `contas_no_auth` maior que 1 significa que existe outra conta além da sua).
+6. **Pegue o UUID da sua conta** e confira que o e-mail está confirmado:
+   ```sql
+   select id, email, email_confirmed_at from auth.users;
+   ```
+   Deve aparecer só a sua conta, com `email_confirmed_at` preenchido. Copie o valor de `id`.
+7. **Promova a conta a administradora da plataforma**, pelo UUID (troque `COLE-O-UUID-AQUI`):
+   ```sql
+   insert into public.plataforma_admins (user_id)
+   select id from auth.users
+   where id = 'COLE-O-UUID-AQUI' and email_confirmed_at is not null
+   returning user_id;
+   ```
+   Tem que voltar **exatamente 1 linha**. Se voltar 0 linhas, o UUID está errado ou o e-mail não está confirmado: não force, corrija a causa e repita. Este é o único jeito de criar um administrador da plataforma: não existe tela nem função que faça isso.
+8. **Confira o resultado:**
+   ```sql
+   select a.user_id, u.email, u.email_confirmed_at
+   from public.plataforma_admins a join auth.users u on u.id = a.user_id;
+   ```
+   Deve listar uma única linha, com o seu e-mail.
+9. **Project Settings > API**: copie *Project URL* e a chave *anon/publishable* para o `web/config.js` (nunca a `service_role` nem a `secret`: elas dão acesso total ao banco e jamais entram no projeto).
+10. **Teste o acesso** (depois do deploy da seção 2): abra `/admin`, tente entrar com uma senha errada (deve aparecer *E-mail ou senha incorretos*) e depois com a senha certa (deve abrir o painel).
+
+Se aparecer *Esta conta não é administradora da plataforma*, o passo 7 não foi feito para essa conta. Para **remover** um administrador: `delete from public.plataforma_admins where user_id = 'UUID';` (mantenha sempre ao menos um).
 
 ## 2. GitHub + Cloudflare Workers (uma vez)
 O site é um **Worker só com arquivos estáticos** (Workers Static Assets), configurado em `wrangler.jsonc`. Não é Cloudflare Pages.
