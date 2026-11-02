@@ -1,20 +1,17 @@
 // Teste de ponta a ponta no Chrome real.
 import { createRequire } from 'node:module';
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
+import sharp from 'sharp';
+import { launchBrowser, tmpDir, fileUrl } from './_env.mjs';
 
-const root = execSync('npm root -g').toString().trim();
-const require = createRequire(path.join(root, 'x.js'));
-const { chromium } = require('playwright');
-const sharp = require('sharp');
 const JSZip = createRequire(import.meta.url)('jszip');
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const editorUrl = 'file://' + path.resolve(here, '../editor.html');
-const OUT = process.env.OUT || fs.mkdtempSync('/tmp/gc-');
+const editorUrl = fileUrl(path.resolve(here, '../editor.html'));
+const OUT = process.env.OUT || tmpDir('gc-');
 fs.mkdirSync(OUT, { recursive: true });
 
 const errors = [];
@@ -27,7 +24,7 @@ const logoF = await mk(600, 600, { r: 214, g: 40, b: 40 }, 'logo.jpg');
 const heroF = await mk(2000, 1000, { r: 60, g: 90, b: 140 }, 'hero.jpg');
 const prodF = await mk(1200, 900, { r: 240, g: 170, b: 60 }, 'prod.jpg');
 
-const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] });
+const browser = await launchBrowser();
 const watch = p => {
   p.on('pageerror', e => errors.push('pageerror: ' + e.message));
   p.on('console', m => { if (m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text())) errors.push('console: ' + m.text()); });
@@ -145,7 +142,7 @@ ok(!/data:image/.test(exported) && exported.includes('id="menu-data"'), 'HTML se
 const siteDir = path.join(OUT, 'site');
 fs.rmSync(siteDir, { recursive: true, force: true });
 for (const n of names) { if (zip.files[n].dir) continue; const f = path.join(siteDir, n); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, await zip.file(n).async('nodebuffer')); }
-const siteUrl = 'file://' + path.join(siteDir, 'index.html');
+const siteUrl = fileUrl(path.join(siteDir, 'index.html'));
 
 console.log('9) site exportado: aberto/fechado');
 const mob = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true });

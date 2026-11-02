@@ -1,17 +1,14 @@
 // E2E da plataforma multi-restaurante: /admin, /<slug>, /<slug>/<codigo>, isolamento e bloqueio.
-import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { startFakeBackend } from './fake-backend.mjs';
+import { launchBrowser, tmpDir } from './_env.mjs';
 
-const root = execSync('npm root -g').toString().trim();
-const require = createRequire(path.join(root, 'x.js'));
-const { chromium } = require('playwright');
 const here = path.dirname(fileURLToPath(import.meta.url));
-const OUT = process.env.OUT || fs.mkdtempSync('/tmp/gcp-');
+const OUT = process.env.OUT || tmpDir('gcp-');
 const WEB = path.join(OUT, 'web'); fs.mkdirSync(WEB, { recursive: true });
 
 const errors = []; let fails = 0, promptAnswer = 'ok';
@@ -35,7 +32,7 @@ const BASE = 'http://127.0.0.1:' + web.address().port;
 
 await be.criarUsuarioAuth('dono@menuazul.com', 'senha-do-dono', true);
 await be.criarUsuarioAuth('intruso@x.com', 'abc', false);
-const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] });
+const browser = await launchBrowser();
 const newPage = async (tag, opts) => { const c = await browser.newContext(opts || { viewport: { width: 1280, height: 860 } }); const p = await c.newPage(); watch(p, tag); return p; };
 const phone = { viewport: { width: 390, height: 800 }, isMobile: true, hasTouch: true };
 

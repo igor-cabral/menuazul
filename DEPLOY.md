@@ -18,13 +18,23 @@ Uma instalação serve todos os restaurantes:
 5. **Project Settings > API**: copie *Project URL* e a chave *anon/publishable* (nunca a service_role).
 6. Authentication > Sign In / Providers: desligue *Allow new users to sign up* (ninguém além de você cria conta).
 
-## 2. GitHub + Cloudflare Pages (uma vez)
-1. Edite `web/config.js` com a URL e a chave pública. Faça commit e push do projeto (a pasta `node_modules`, `dist` e `editor.html` ficam de fora).
-2. Cloudflare > Workers & Pages > Create > Pages > Connect to Git.
-   - Build command: `npm ci --omit=dev && npm run build:web`
-   - Output directory: `dist`
-3. Custom domain: `menuazul.igorcabral.dev.br`.
-4. Sempre que mudar o código: push → publica sozinho.
+## 2. GitHub + Cloudflare Workers (uma vez)
+O site é um **Worker só com arquivos estáticos** (Workers Static Assets), configurado em `wrangler.jsonc`. Não é Cloudflare Pages.
+
+1. `web/config.js` com a URL e a chave pública do Supabase (já preenchido). Faça commit e push.
+2. Cloudflare > Workers & Pages > o Worker `menuazul` > **Settings > Build** (Workers Builds, ligado ao GitHub):
+   - **Build command:** `npm run build:web`  ← gera a pasta `dist/` (sem isso o site fica em branco)
+   - **Deploy command:** `npx wrangler deploy`  (padrão)
+   - **Root directory:** `/`
+   - O diretório de saída **não** se configura no painel: vem do `wrangler.jsonc` (`assets.directory = ./dist`).
+3. Custom domain: Worker > Settings > Domains & Routes > `menuazul.igorcabral.dev.br`.
+4. Cada push na branch principal faz build + deploy sozinho.
+
+Como as rotas funcionam: `/admin`, `/restaurante`, `/restaurante/menu` e `/restaurante/codigo` não são arquivos. O `wrangler.jsonc` usa `not_found_handling: "single-page-application"`, então **navegações** (barra de endereço, QR Code) recebem o `index.html`. Pedidos sem arquivo que não são navegação (script, imagem, favicon) caem em `worker/index.js` e recebem **404 de verdade**.
+
+Se o site aparecer em branco ou der 404: confira se o build command acima está preenchido e se o log mostra `dist/ gerado`. O log de deploy deve dizer `Read 3 files from the assets directory .../dist` (e não `web`).
+
+Teste local (mesmo runtime do Cloudflare): `npm run build:web && npx wrangler dev`, depois abra http://127.0.0.1:8787/admin.
 
 ## 3. Cada novo restaurante
 1. `/admin` → **Novo restaurante** (nome, endereço, login e senha do responsável).
@@ -40,4 +50,4 @@ Mudou preço/foto? Edite no editor e publique de novo. O restaurante marca "esgo
 - Identidade visual: cores em `web/portal.css` (`:root`), nome/logo em `web/config.js` (`brand`).
 
 ## Testes
-`npm test` (banco, plataforma, publicação e editor). Não cobrem um Supabase/Cloudflare reais: no primeiro uso confira login em `/admin`, publicar uma foto e um pedido de ponta a ponta.
+`npm test` (banco, plataforma, publicação e editor) e `npm run test:worker` (build + rotas servidas pelo Worker local). Não cobrem o Supabase/Cloudflare reais: no primeiro uso confira login em `/admin`, publicar uma foto e um pedido de ponta a ponta.

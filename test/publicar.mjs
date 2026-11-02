@@ -1,18 +1,15 @@
 // E2E: editor local publica o cardápio (com fotos) na plataforma; o site da plataforma o exibe.
-import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 import { startFakeBackend } from './fake-backend.mjs';
+import { launchBrowser, tmpDir, fileUrl } from './_env.mjs';
 
-const root = execSync('npm root -g').toString().trim();
-const require = createRequire(path.join(root, 'x.js'));
-const { chromium } = require('playwright');
-const sharp = require('sharp');
 const here = path.dirname(fileURLToPath(import.meta.url));
-const OUT = process.env.OUT || fs.mkdtempSync('/tmp/gcq-');
+const OUT = process.env.OUT || tmpDir('gcq-');
 const WEB = path.join(OUT, 'web'); fs.mkdirSync(WEB, { recursive: true });
 const errors = []; let fails = 0;
 const ok = (c, msg) => { console.log((c ? '  ✓ ' : '  ✗ ') + msg); if (!c) fails++; };
@@ -38,9 +35,9 @@ const BASE = 'http://127.0.0.1:' + web.address().port;
 const logo = path.join(OUT, 'logo.jpg'); await sharp({ create: { width: 600, height: 600, channels: 3, background: { r: 214, g: 40, b: 40 } } }).jpeg().toFile(logo);
 const prod = path.join(OUT, 'prod.jpg'); await sharp({ create: { width: 800, height: 600, channels: 3, background: { r: 240, g: 170, b: 60 } } }).jpeg().toFile(prod);
 
-const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] });
+const browser = await launchBrowser();
 const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage(); watch(page, 'editor');
-await page.goto('file://' + path.resolve(here, '../editor.html'));
+await page.goto(fileUrl(path.resolve(here, '../editor.html')));
 await page.click('#btn-new'); await page.fill('#dlg input', 'Burger Bom'); await page.click('#dlg button[type=submit]');
 await page.waitForSelector('#view-editor:not([hidden])');
 await page.locator('#panel input[type=file]').nth(0).setInputFiles(logo);

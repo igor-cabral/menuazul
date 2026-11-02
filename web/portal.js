@@ -1,4 +1,4 @@
-/* Aplicação única da plataforma (Cloudflare Pages). Rotas:
+/* Aplicação única da plataforma (Cloudflare Workers). Rotas:
    /                 → página inicial
    /admin            → painel do dono da plataforma
    /<slug>           → login e painéis do restaurante (admin, caixa, cozinha)
