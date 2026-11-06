@@ -24,6 +24,7 @@
   const hash = s => { let x = 5381; for (let i = 0; i < s.length; i++) x = ((x << 5) + x + s.charCodeAt(i)) | 0; return x + ':' + s.length; };
 
   /* ---------- estado ---------- */
+  const HOST = window.MA_HOST || null; // definido pelo painel do restaurante (editor embutido): {url, key, token, slug, nome, site}
   let cur = null;
   const ui = { tab: 'marca', expanded: new Set(), closed: new Set(), device: 'mobile', focusId: null };
 
@@ -82,6 +83,7 @@
   function makeResolver() {
     const map = new Map(), used = new Set();
     const fn = (dataUrl, name) => {
+      if (!/^data:/.test(dataUrl)) return dataUrl; // já é um endereço (foto que está online)
       if (map.has(dataUrl)) return map.get(dataUrl).path;
       const m = /^data:([^;,]+)[;,]/.exec(dataUrl) || [];
       const ext = EXT[m[1]] || 'img';
@@ -344,6 +346,7 @@
       const hora = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       if (FS.state === 'on') { await fsQueue(snap); setStatus('Salvo às ' + hora + (FS.state === 'on' ? ' · 📁 pasta' : ' · ⚠ pasta')); }
       else setStatus('Salvo às ' + hora);
+      if (HOST) { hostStatus(); setStatus($('#status').textContent + (hostDirty() ? ' · não publicado' : ' · publicado')); }
     } catch (e) { setStatus('⚠ Erro ao salvar'); toast('Erro ao salvar: ' + (e && e.message)); }
   }
   function updatePreview() {
@@ -573,20 +576,23 @@
     if (PLAT.exp - Date.now() < 60000) await platAuth('refresh_token', { refresh_token: PLAT.refresh });
     return makeApi(platBase(), platCfg().key, () => PLAT.jwt)(name, args || {});
   }
+  const hostRpc = (n, a) => makeApi(HOST.url, HOST.key)(n, Object.assign({ p_token: HOST.token }, a || {}));
   const sha12 = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), x => x.toString(16).padStart(2, '0')).join('').slice(0, 12);
   const IMG_MIME = { webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif' };
 
   async function publicar() {
-    const slug = cur.options.plataforma.slug, r = (PLAT.rests || []).find(x => x.slug === slug);
+    const slug = HOST ? HOST.slug : cur.options.plataforma.slug, r = HOST ? {} : (PLAT.rests || []).find(x => x.slug === slug);
     if (!r) throw new Error('Escolha o restaurante.');
-    const resolve = makeResolver(), lite = liteClone(cur, resolve), urlOf = {}, base = platBase(), c = platCfg();
+    if (HOST) cur.options.plataforma.slug = slug;
+    const resolve = makeResolver(), lite = liteClone(cur, resolve), urlOf = {}, base = HOST ? HOST.url.replace(/\/+$/, '') : platBase(), c = HOST ? { key: HOST.key } : platCfg();
     for (const f of resolve.files()) {            // fotos: nome = hash do conteúdo (cache eterno, sem foto velha)
       const bytes = b64ToBytes(f.b64), ext = f.path.split('.').pop(), key = slug + '/' + await sha12(bytes) + '.' + ext;
+      if (HOST && ext === 'svg') { urlOf[f.path] = 'data:image/svg+xml;base64,' + f.b64; continue; } // SVG pequeno fica embutido (o envio do painel só aceita fotos raster)
       const pub = base + '/storage/v1/object/public/cardapios/' + key;
       const have = await fetch(pub, { method: 'HEAD' }).then(x => x.ok, () => false);
       if (!have) {
-        const up = await fetch(base + '/storage/v1/object/cardapios/' + key, { method: 'POST', headers: { apikey: c.key, Authorization: 'Bearer ' + PLAT.jwt, 'x-upsert': 'true', 'Content-Type': IMG_MIME[ext] || 'application/octet-stream' }, body: bytes });
-        if (!up.ok) throw new Error('Falha ao enviar a foto ' + f.path + ' (' + up.status + ')');
+        const up = await fetch(base + '/storage/v1/object/cardapios/' + key, { method: 'POST', headers: Object.assign(HOST ? Object.assign({ apikey: c.key }, /^eyJ/.test(c.key) ? { Authorization: 'Bearer ' + c.key } : {}) : { apikey: c.key, Authorization: 'Bearer ' + PLAT.jwt, 'x-upsert': 'true' }, { 'Content-Type': IMG_MIME[ext] || 'application/octet-stream' }), body: bytes });
+        if (!up.ok && !(HOST && /Duplicate|already exists/i.test(await up.text().catch(() => '')))) throw new Error('Falha ao enviar a foto ' + f.path + ' (' + up.status + ')');
       }
       urlOf[f.path] = pub;
     }
@@ -595,11 +601,51 @@
     lite.categories.forEach(cat => cat.items.forEach(it => { it.image = sub(it.image); }));
     lite.options.siteUrl = ''; lite.options.domain = ''; lite.folder = '';
     const itens = MenuGen.systemMenu(cur);
-    await platRpc('plataforma_publicar', { p_rest: r.id, p_modelo: lite, p_itens: itens });
+    if (HOST) await hostRpc('admin_publicar', { p_modelo: lite, p_itens: itens });
+    else await platRpc('plataforma_publicar', { p_rest: r.id, p_modelo: lite, p_itens: itens });
     return itens.length;
   }
 
+  /* painel do restaurante: publicar com a própria sessão do administrador (sem login de dono) */
+  const hostDirty = () => !!cur && (cur.hostPub || 0) < cur.updatedAt;
+  function hostStatus() { const e = $('#host-status'); if (e) e.textContent = cur ? (hostDirty() ? '● Alterações ainda não publicadas' : '✓ Online está igual a este cardápio') : ''; }
+  async function hostPublish(btn) {
+    const old = btn && btn.textContent; if (btn) { btn.disabled = true; btn.textContent = 'Publicando…'; }
+    try {
+      await saveNow();
+      const stamp = cur.updatedAt, n = await publicar();
+      cur.hostPub = stamp; cur.hostSeen = ((await hostRpc('admin_cardapio_get')) || {}).publicado_em || null;
+      await saveNow(); hostStatus(); toast('✅ Publicado: o cardápio online já foi atualizado (' + n + ' itens)');
+    } catch (e) { toast(/sessao_invalida|restaurante_bloqueado/.test(e.message) ? 'Sessão expirada. Saia e entre de novo no painel.' : '⚠ ' + (e.message || 'Erro ao publicar')); }
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
+  function panelHost() {
+    const wrap = h('div', { class: 'pin sysp' }), site = HOST.site || '';
+    wrap.append(h('p', { class: 'muted' }, 'Clique em "Salvar e publicar" (ou Ctrl+S) para atualizar o cardápio online dos seus clientes. As edições são guardadas neste navegador enquanto você trabalha.'),
+      h('div', { class: 'sys-status', id: 'host-status' }), h('div', { class: 'btnrow' }, h('button', { class: 'btn primary', onclick: e => hostPublish(e.currentTarget) }, '☁ Salvar e publicar')),
+      site && h('p', { class: 'muted' }, 'Cardápio: ' + site + '/' + HOST.slug + '/menu'));
+    setTimeout(hostStatus, 0); return wrap;
+  }
+  async function hostOpen() {
+    const id = 'host-' + HOST.slug; let local = await DB.get(id), online = null;
+    try { online = await hostRpc('admin_cardapio_get'); } catch (e) { toast(/sessao_invalida|restaurante_bloqueado/.test(e.message) ? 'Sessão expirada. Saia e entre de novo no painel.' : '⚠ Não foi possível consultar o cardápio online'); if (!local) return false; }
+    const at = online ? online.publicado_em || null : undefined, fromOnline = at !== undefined && online.cardapio;
+    const load = async () => {
+      const m = clone(online.cardapio);
+      await hydrate(m, async u => { const r = await fetch(u); if (!r.ok) throw new Error('Não foi possível baixar uma foto do cardápio online (' + r.status + ')'); const blob = await r.blob(); return await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(String(f.result).split(',')[1]); f.onerror = no; f.readAsDataURL(blob); }); });
+      return m;
+    };
+    try {
+      if (!local || (fromOnline && local.hostSeen !== at && confirm('O cardápio online foi alterado desde a última vez que você o abriu aqui (talvez em outro aparelho).\n\nOK = carregar a versão online (descarta as alterações deste navegador)\nCancelar = continuar com a versão deste navegador'))) {
+        const m = fromOnline ? await load() : newRestaurant(HOST.nome);
+        local = Object.assign(MenuGen.normalize(m), { id, folder: '', hostSeen: at || null, hostPub: Date.now() });
+        local.updatedAt = local.hostPub; await DB.put(local);
+      } else if (at !== undefined && local.hostSeen !== at) { local.hostSeen = at; await DB.put(local); }
+    } catch (e) { toast('⚠ ' + (e.message || 'Erro ao carregar o cardápio online')); if (!local) return false; }
+    await openRestaurant(id); return true;
+  }
   function panelPlatform() {
+    if (HOST) return panelHost();
     const c = platCfg(), wrap = h('div', { class: 'pin sysp' });
     const inp = (id, label, key, ph, type) => { const i = h('input', { id, type: type || 'text', placeholder: ph || '', autocapitalize: 'none' }); i.value = c[key] || ''; i.addEventListener('input', () => { const n = platCfg(); n[key] = i.value.trim(); platSet(n); }); return h('label', { class: 'f' }, h('span', { class: 'f-l' }, label), i); };
     const status = h('div', { class: 'sys-status', id: 'plat-status' }, PLAT.msg);
@@ -749,7 +795,7 @@
   }
 
   function renderPanel(keepScroll) {
-    const tabs = [['marca', 'Marca'], ['contato', 'Contato'], ['cardapio', 'Cardápio'], ['opcoes', 'Opções'], ['sistema', 'Plataforma']];
+    const tabs = [['marca', 'Marca'], ['contato', 'Contato'], ['cardapio', 'Cardápio'], ['opcoes', 'Opções'], ['sistema', HOST ? 'Publicar' : 'Plataforma']];
     $('#tabsbar').replaceChildren(...tabs.map(([k, l]) => h('button', { class: 'tab' + (ui.tab === k ? ' on' : ''), onclick: () => { ui.tab = k; renderPanel(false); } }, l)));
     const fn = { marca: panelBrand, contato: panelContact, cardapio: panelMenu, opcoes: panelOptions, sistema: panelPlatform }[ui.tab];
     const p = $('#panel'); const st = p.scrollTop;
@@ -845,6 +891,7 @@
     $('#view-home').hidden = true; $('#view-editor').hidden = false;
     ['#btn-home', '#btn-save', '#btn-backup', '#btn-export'].forEach(s => { $(s).hidden = false; });
     $('#cur-name').textContent = cur.name; setStatus('');
+    if (HOST) { $('#btn-home').hidden = true; $('#btn-save').textContent = '☁ Salvar e publicar'; $('#btn-save').classList.replace('ghost', 'primary'); $('#btn-export').classList.replace('primary', 'ghost'); ui.tab = 'cardapio'; }
     renderPanel(false); updatePreview();
   }
 
@@ -908,7 +955,7 @@
   $('#btn-backup-all').onclick = backupAll;
   $('#btn-home').onclick = showHome;
   $('#btn-folder').onclick = onFolderClick;
-  $('#btn-save').onclick = async () => { await saveNow(); toast('Salvo ✓'); };
+  $('#btn-save').onclick = async () => { if (HOST) return hostPublish($('#btn-save')); await saveNow(); toast('Salvo ✓'); };
   $('#btn-backup').onclick = backupOne;
   $('#btn-export').onclick = exportZip;
   $('#btn-newtab').onclick = () => {
@@ -922,16 +969,23 @@
     [...$('#device').children].forEach(x => x.classList.toggle('on', x === b));
     $('#frame').className = 'frame ' + ui.device;
   });
-  document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (cur) saveNow().then(() => toast('Salvo ✓')); } });
+  document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (cur) { if (HOST) hostPublish($('#btn-save')); else saveNow().then(() => toast('Salvo ✓')); } } });
   document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); });
   window.addEventListener('pagehide', () => { saveNow(); });
 
   /* gancho de teste/depuração */
-  window.GC = { state: () => cur, makeZip, openRestaurant, showHome, DB, FS, fsSyncAll };
+  window.GC = { state: () => cur, saveNow, makeZip, openRestaurant, showHome, DB, FS, fsSyncAll };
 
   (async () => {
     await fsInit();
     if (FS.state === 'on') { try { await fsSyncAll(); } catch (e) { /* segue */ } }
+    if (HOST) { // painel do restaurante: um único cardápio (o do restaurante logado); a lista local de restaurantes não aparece
+      $('#app-title').textContent = 'Editor de cardápio'; $('.top b img').hidden = true; // o painel já mostra a marca
+      ['#btn-new', '#btn-import', '#btn-backup-all'].forEach(x => { const e = $(x); if (e) e.hidden = true; });
+      let ok = false; try { ok = await hostOpen(); } catch (e) { toast('⚠ ' + e.message); }
+      if (!ok) $('#home-list').replaceChildren(h('div', { class: 'emptyhome', style: 'grid-column:1/-1' }, 'Não foi possível abrir o cardápio. Volte ao painel e abra o editor de novo.'));
+      return;
+    }
     showHome();
   })();
 })();

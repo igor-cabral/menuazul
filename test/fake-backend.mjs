@@ -95,10 +95,11 @@ export async function startFakeBackend() {
       }
       const up = /^\/storage\/v1\/object\/(.+)$/.exec(url);
       if (up && (req.method === 'POST' || req.method === 'PUT')) {
-        const sub = subOf(req);
-        const ok = sub && (await be.query('select 1 from plataforma_admins where user_id = $1', [sub])).rows.length;
-        if (!ok) return send(403, { message: 'new row violates row-level security policy' });
-        const k = decodeURIComponent(up[1]);
+        const sub = subOf(req), k = decodeURIComponent(up[1]);
+        const dono = sub && (await be.query('select 1 from plataforma_admins where user_id = $1', [sub])).rows.length;
+        // política "cardapios_envio_painel": qualquer um envia foto nova com caminho válido (sem sobrescrever)
+        const painel = (await be.query('select _foto_ok($1) as ok', [k.replace(/^cardapios\//, '')])).rows[0].ok && req.headers['x-upsert'] !== 'true';
+        if (!dono && !painel) return send(403, { message: 'new row violates row-level security policy' });
         if (files.has(k) && req.headers['x-upsert'] !== 'true') return send(409, { message: 'The resource already exists' });
         files.set(k, { buf: raw, type: req.headers['content-type'] || 'application/octet-stream' });
         return send(200, { Key: k });

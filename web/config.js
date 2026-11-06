@@ -3,5 +3,5 @@
 window.GC_CONFIG = {
   supabaseUrl: 'https://mybdjmalvsqnczjabsse.supabase.co',
   supabaseKey: 'sb_publishable_bkhWiIV6NQl6wIGoHk99uQ_-S5FQFdr',
-  brand: { name: 'Menu Azul', logo: '' }   // identidade da plataforma (troque depois)
+  brand: { name: 'Menu Azul' }   // logos: /brand/ (menuazul.png, menuazul-claro.png, simbolo-claro.png); para trocar, informe logo/logoLight/symbol aqui
 };

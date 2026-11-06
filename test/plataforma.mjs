@@ -24,7 +24,7 @@ fs.writeFileSync(path.join(OUT, 'config.js'), `window.GC_CONFIG={supabaseUrl:${J
 execSync('node build-web.mjs', { cwd: path.resolve(here, '..'), env: { ...process.env, WEB_OUT: WEB, CONFIG_FILE: path.join(OUT, 'config.js') } });
 const web = http.createServer((req, res) => {   // imita o Cloudflare Pages com _redirects (SPA)
   const p = decodeURIComponent(req.url.split('?')[0]);
-  const f = path.join(WEB, p === '/config.js' ? 'config.js' : 'index.html');
+  const f = path.join(WEB, p === '/config.js' ? 'config.js' : p === '/editor.html' ? 'editor.html' : 'index.html');
   res.setHeader('Content-Type', f.endsWith('.js') ? 'text/javascript' : 'text/html; charset=utf-8'); res.end(fs.readFileSync(f));
 });
 await new Promise(r => web.listen(0, '127.0.0.1', r));
@@ -101,6 +101,19 @@ await gerente.click('.nav a:has-text("Esgotados")');
 await gerente.waitForSelector('.line[data-item="batata"]');
 ok(await gerente.locator('.line[data-item]').count() === 2, 'lista de itens para marcar esgotado');
 await gerente.screenshot({ path: path.join(OUT, 'admin-restaurante.png') });
+await gerente.click('.nav a:has-text("Editor de cardápio")');
+await gerente.waitForSelector('.edwrap iframe');
+const ed = await (await gerente.locator('.edwrap iframe').elementHandle()).contentFrame();
+await ed.waitForSelector('#view-editor:not([hidden])');
+ok((await ed.textContent('#cur-name')).includes('Pizzaria Boa') && await ed.locator('#btn-home').isHidden(), 'admin abre direto o cardápio do próprio restaurante (sem lista de restaurantes)');
+await ed.evaluate(() => { const s = GC.state(); s.name = 'Pizzaria Boa Editada'; s.updatedAt = Date.now(); });
+await ed.click('#btn-save');
+await ed.waitForSelector('#toast.on:has-text("Publicado")');
+ok((await be.query("select cardapio->>'name' as n from restaurantes where slug = 'pizzaria-boa'")).rows[0].n === 'Pizzaria Boa Editada', 'Salvar e publicar muda o cardápio online');
+ok((await be.query('select count(*)::int as c from cardapio where restaurante_id = $1', [ids['pizzaria-boa']])).rows[0].c === 2, 'itens do sistema continuam publicados');
+await be.rpc('plataforma_publicar', { p_rest: ids['pizzaria-boa'], p_modelo: modelo('Pizzaria Boa', '20,00'), p_itens: itens(20) }, dono); // volta ao estado do teste
+await gerente.click('.nav a:has-text("Mesas e QR")'); await gerente.waitForSelector('#add-mesas');
+ok(await gerente.locator('.edwrap').count() === 0, 'voltar ao painel remove o editor');
 
 console.log('3) caixa e cozinha com usuário próprio');
 const caixa = await newPage('caixa'); const kds = await newPage('kds');
@@ -108,9 +121,13 @@ await caixa.goto(BASE + '/pizzaria-boa'); await caixa.fill('#login', 'caixa1'); 
 await caixa.waitForSelector('.mesa[data-mesa="1"]');
 ok(await caixa.locator('.backpill').count() === 0 && await caixa.locator('.nav').count() === 0, 'caixa só vê o caixa');
 await caixa.goto(BASE + '/pizzaria-boa#/equipe'); await caixa.waitForSelector('.mesa[data-mesa="1"]');
+await caixa.goto(BASE + '/pizzaria-boa#/editor'); await caixa.waitForSelector('.mesa[data-mesa="1"]');
+ok(await caixa.locator('.edwrap').count() === 0, 'caixa não acessa o editor por URL');
 ok(await caixa.locator('#u-add').count() === 0, 'caixa não consegue abrir o painel de admin por URL');
 await kds.goto(BASE + '/pizzaria-boa'); await kds.fill('#login', 'coz1'); await kds.fill('#senha', 'cozinha1'); await kds.click('button[type=submit]');
 await kds.waitForSelector('.board');
+await kds.goto(BASE + '/pizzaria-boa#/editor'); await kds.waitForSelector('.board');
+ok(await kds.locator('.edwrap').count() === 0, 'cozinha não acessa o editor por URL');
 ok(true, 'cozinha entra no quadro');
 
 console.log('4) cliente na mesa');
@@ -152,7 +169,7 @@ await bk.waitForSelector('#add-mesas');
 ok(await bk.locator('.line[data-mesa]').count() === 0, 'admin do Burger não vê mesas da Pizzaria');
 const nf = await newPage('nf'); await nf.goto(BASE + '/nao-existe');
 await nf.waitForSelector('h1'); ok(/não encontrado/i.test(await nf.textContent('h1')), '/slug inexistente');
-await nf.goto(BASE + '/'); await nf.waitForSelector('h1'); ok(/Menu Azul/.test(await nf.textContent('h1')), 'página inicial');
+await nf.goto(BASE + '/'); await nf.waitForSelector('.herologo'); ok(await nf.getAttribute('.herologo', 'alt') === 'Menu Azul' && await nf.locator('.fcard').count() === 4, 'página inicial com a marca e os 4 destaques');
 const pub = await newPage('pub', phone); await pub.goto(BASE + '/pizzaria-boa/menu'); await pub.waitForSelector('h1');
 ok(/Pizzaria Boa/.test(await pub.textContent('h1')) && await pub.locator('.mesabar').count() === 0, '/slug/menu mostra o cardápio sem pedido por mesa');
 

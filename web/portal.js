@@ -7,7 +7,8 @@
 (function () {
   'use strict';
   const CFG = window.GC_CONFIG || {};
-  const BRAND = Object.assign({ name: 'Menu Azul', logo: '' }, CFG.brand);
+  const BRAND = Object.assign({ name: 'Menu Azul' }, CFG.brand), customLogo = !!BRAND.logo;
+  BRAND.logo = BRAND.logo || '/brand/menuazul.png'; BRAND.logoLight = BRAND.logoLight || '/brand/menuazul-claro.png'; BRAND.symbol = BRAND.symbol || '/brand/simbolo-claro.png';
   const root = document.getElementById('root');
   const rpc = makeApi(CFG.supabaseUrl, CFG.supabaseKey);
   const cssPortal = document.getElementById('css-portal'), cssScreen = document.getElementById('css-screen');
@@ -41,10 +42,14 @@
     const s = document.documentElement.style; s.setProperty('--primary', cor); s.setProperty('--on-primary', lum(cor) > .4 ? '#111' : '#fff');
   }
   function useCss(screen) { cssPortal.disabled = !!screen; cssScreen.textContent = screen || ''; }
-  const brandEl = () => h('div', { class: 'brand' }, BRAND.logo && h('img', { src: BRAND.logo, alt: '' }), BRAND.name);
+  const brandEl = () => h('div', { class: 'brand plat' }, h('img', { src: BRAND.logo, alt: BRAND.name }), customLogo && BRAND.name);
+  const topBrand = () => h('a', { class: 'tbrand', href: '/', title: BRAND.name }, h('img', { src: BRAND.logoLight, alt: BRAND.name }));
+  const creditEl = () => h('a', { class: 'credit', href: 'https://igorcabral.dev.br', target: '_blank', rel: 'noopener', title: 'igor cabral. design & web' }, h('span', {}, 'Desenvolvido por'), h('img', { src: '/brand/igorcabral-claro.png', alt: 'igor cabral. design & web' }));
+  const footEl = () => h('footer', { class: 'foot' }, h('span', { class: 'fb' }, h('img', { src: BRAND.symbol, alt: '' }), BRAND.name + ' · cardápio digital e pedidos por mesa'), creditEl());
+  const authWrap = (card, powered) => h('div', { class: 'center' }, h('div', { class: 'stack' }, card, powered && h('div', { class: 'powered' }, 'Plataforma ', h('img', { src: BRAND.logoLight, alt: BRAND.name }))), creditEl());
   function msgPage(title, text) {
     useCss(null); document.title = title + ' — ' + BRAND.name;
-    root.replaceChildren(h('div', { class: 'center' }, h('div', { class: 'card' }, brandEl(), h('h1', {}, title), text && h('p', {}, text))));
+    root.replaceChildren(authWrap(h('div', { class: 'card' }, brandEl(), h('h1', {}, title), text && h('p', {}, text))));
   }
   function modal(title, build) {
     const dlg = h('dialog', {});
@@ -61,16 +66,37 @@
   function route() {
     const seg = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (!/^https?:\/\//.test(CFG.supabaseUrl || '') || /SEU-PROJETO/.test(CFG.supabaseUrl)) return msgPage('Configuração pendente', 'Preencha supabaseUrl e supabaseKey em config.js.');
-    if (!seg.length) return msgPage(BRAND.name, 'Acesse o endereço do seu restaurante para entrar.');
+    if (!seg.length) return home();
     if (seg[0].toLowerCase() === 'admin' && seg.length === 1) return plataforma();
     if (seg.length === 1) return restaurante(seg[0].toLowerCase());
     if (seg.length === 2) return menuPage(seg[0].toLowerCase(), seg[1].toLowerCase() === 'menu' ? null : seg[1].toLowerCase());
     msgPage('Página não encontrada');
   }
 
+  /* ---------- página inicial da plataforma ---------- */
+  function home() {
+    useCss(null); document.title = BRAND.name + ' — cardápio digital e pedidos por mesa';
+    const inp = h('input', { id: 'go-slug', placeholder: 'seu-restaurante', autocapitalize: 'none', autocomplete: 'off', spellcheck: false, 'aria-label': 'Endereço do seu restaurante' });
+    const feat = (ico, t, d) => h('div', { class: 'fcard' }, h('div', { class: 'fico' }, ico), h('h3', {}, t), h('p', {}, d));
+    root.replaceChildren(
+      h('div', { class: 'center hero' }, h('div', { class: 'stack wide' },
+        h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }),
+        h('h1', {}, 'Cardápio digital, pedidos por mesa e caixa em um só lugar'),
+        h('p', {}, 'O cliente pede pelo celular, a cozinha recebe e o caixa fecha a conta. Simples assim.'),
+        h('form', { class: 'gofrm', onsubmit: e => { e.preventDefault(); const s = slugify(inp.value); if (s) location.href = '/' + s; } },
+          h('span', { class: 'pre' }, location.host + '/'), inp, h('button', { class: 'btn', type: 'submit' }, 'Entrar')),
+        h('small', {}, 'Digite o endereço do seu restaurante para acessar o painel da equipe.')), creditEl()),
+      h('section', { class: 'feat' },
+        feat('📱', 'Cardápio por QR Code', 'Cada mesa tem o seu QR. O cliente abre o cardápio no celular e faz o pedido, sem baixar nada.'),
+        feat('👨‍🍳', 'Pedido direto na cozinha', 'Os pedidos aparecem na tela da cozinha, organizados por mesa.'),
+        feat('💳', 'Caixa e contas por mesa', 'Abra e feche comandas, registre pagamentos e acompanhe o resumo do dia.'),
+        feat('✏️', 'Editor de cardápio', 'Edite itens, preços e fotos e publique para os clientes com um clique.')),
+      footEl());
+  }
+
   /* ---------- cardápio (mesa ou público) ---------- */
   async function menuPage(slug, codigo) {
-    useCss(null); root.replaceChildren(h('div', { class: 'center' }, h('p', {}, 'Carregando cardápio…')));
+    useCss(null); root.replaceChildren(h('div', { class: 'center' }, h('div', { class: 'spin' }), h('p', {}, 'Carregando cardápio…')));
     let r;
     try { r = await rpc('publico_cardapio', { p_slug: slug }); } catch (e) {
       if (/restaurante_inexistente/.test(e.message)) return msgPage('Restaurante não encontrado', 'Confira o endereço ou o QR Code.');
@@ -115,22 +141,25 @@
     } },
       h('div', { class: 'brand' }, info.logo && h('img', { src: info.logo, alt: '' }), info.nome),
       h('p', {}, 'Acesso da equipe'), field('Usuário', user), field('Senha', pass), err, go);
-    root.replaceChildren(h('div', { class: 'center' }, form)); user.focus();
+    root.replaceChildren(authWrap(form, true)); user.focus();
   }
 
   let current = null; // tela ativa {stop}
-  const unmount = () => { if (current && current.stop) current.stop(); current = null; document.querySelectorAll('.backpill').forEach(e => e.remove()); };
+  const unmount = () => { const r = current && current.stop && current.stop(); current = null; document.querySelectorAll('.backpill').forEach(e => e.remove()); return r; }; // stop() pode devolver uma Promise (o editor grava antes de sair)
 
   function entrar(info, sess, KEY) {
-    const sair = async (msg) => { unmount(); try { await rpc('staff_logout', { p_token: sess.token }); } catch (e) { /* ok */ } lsSet(KEY, null); loginView(info, KEY, msg || ''); };
-    const expirou = () => { unmount(); lsSet(KEY, null); loginView(info, KEY, 'Sessão expirada ou acesso removido. Entre de novo.'); };
+    const sair = async (msg) => { await unmount(); try { await rpc('staff_logout', { p_token: sess.token }); } catch (e) { /* ok */ } lsSet(KEY, null); loginView(info, KEY, msg || ''); };
+    const expirou = async () => { await unmount(); lsSet(KEY, null); loginView(info, KEY, 'Sessão expirada ou acesso removido. Entre de novo.'); };
     const call = (n, a) => rpc(n, Object.assign({ p_token: sess.token }, a || {})).catch(e => { if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) expirou(); throw e; });
     const kcfg = { api: rpc, token: sess.token, nome: info.nome, expired: expirou, logout: () => sair() };
     const admin = sess.papel === 'admin';
-    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'equipe', 'config', 'esgotados'] : [sess.papel];
+    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'equipe', 'esgotados', 'editor', 'config'] : [sess.papel];
 
-    function show() {
-      unmount();
+    let seq = 0;
+    async function show() {
+      const my = ++seq;
+      await unmount();
+      if (my !== seq) return; // outra navegação chegou enquanto o editor gravava
       let t = location.hash.replace('#/', '');
       if (!TELAS.includes(t)) t = admin ? 'mesas' : sess.papel;
       document.title = info.nome;
@@ -142,11 +171,11 @@
         return;
       }
       useCss(null);
-      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['config', 'Configurações']]
+      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
         .map(([k, l]) => h('a', { href: '#/' + k, class: k === t ? 'on' : '' }, l)));
-      const body = h('div', { class: 'main' });
-      root.replaceChildren(h('div', { class: 'top' }, h('b', {}, info.nome), nav, h('span', { class: 'sp' }), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair')), body);
-      ({ mesas: pMesas, equipe: pEquipe, config: pConfig, esgotados: pEsgotados }[t])(body, call, info, sess);
+      const body = h('div', { class: t === 'editor' ? 'edwrap' : 'main' });
+      root.replaceChildren(h('div', { class: 'top' }, h('img', { class: 'sym', src: BRAND.symbol, alt: BRAND.name }), h('b', {}, info.nome), nav, h('span', { class: 'sp' }), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair')), body, t !== 'editor' && footEl());
+      ({ mesas: pMesas, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, editor: pEditor }[t])(body, call, info, sess);
     }
     window.onhashchange = show; show();
   }
@@ -229,6 +258,26 @@
       }) : h('p', { class: 'mut' }, 'Cardápio ainda não publicado.')));
   }
 
+  /* ----- painel: editor de cardápio (editor.html existente, só administradores) ----- */
+  async function pEditor(box, call, info, sess) {
+    try { await call('admin_usuarios'); } catch (e) { // confirma no servidor que a sessão é de administrador
+      if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) return; // call() já levou ao login
+      return box.replaceChildren(h('div', { class: 'main' }, h('div', { class: 'sec' }, h('p', { class: 'mut' }, 'Não foi possível verificar o acesso. Tente de novo.'))));
+    }
+    let html;
+    try { const r = await fetch('/editor.html'); html = r.ok ? await r.text() : ''; } catch (e) { html = ''; }
+    if (!box.isConnected) return; // o usuário já saiu desta aba durante o carregamento
+    if (!/id="view-editor"/.test(html)) return box.replaceChildren(h('div', { class: 'main' }, h('div', { class: 'sec' }, h('p', { class: 'mut' }, 'Não foi possível carregar o editor. Tente de novo.'))));
+    const host = { url: CFG.supabaseUrl, key: CFG.supabaseKey, token: sess.token, slug: info.slug, nome: info.nome, site: location.origin }; // o editor publica com a sessão do admin
+    html = html.replace('<head>', () => '<head><script>window.MA_HOST=' + JSON.stringify(host).replace(/</g, '\\u003c') + '<\/script>');
+    const ifr = h('iframe', { title: 'Editor de cardápio' });
+    ifr.srcdoc = html; box.replaceChildren(ifr);
+    current = { stop() { // grava o que estiver pendente no editor antes de removê-lo (no máximo 3 s de espera)
+      const w = ifr.contentWindow, save = w && w.GC && w.GC.saveNow ? Promise.resolve(w.GC.saveNow()).catch(() => {}) : Promise.resolve();
+      return Promise.race([save, new Promise(r => setTimeout(r, 3000))]);
+    } };
+  }
+
   /* ---------- /admin: dono da plataforma (Supabase Auth) ---------- */
   function plataforma() {
     useCss(null); document.title = 'Administração — ' + BRAND.name;
@@ -254,7 +303,7 @@
     function loginP(msg) {
       const em = h('input', { id: 'email', type: 'email', autocomplete: 'username', required: true }), pw = h('input', { id: 'senha', type: 'password', autocomplete: 'current-password', required: true });
       const err = h('div', { class: 'err' }, msg || ''), go = h('button', { class: 'btn', type: 'submit' }, 'Entrar');
-      root.replaceChildren(h('div', { class: 'center' }, h('form', { class: 'card', onsubmit: async e => {
+      root.replaceChildren(authWrap(h('form', { class: 'card', onsubmit: async e => {
         e.preventDefault(); go.disabled = true; err.textContent = '';
         try { P = await authReq('password', { email: em.value.trim(), password: pw.value }); lsSet(KEY, P); inicio(); } catch (x) { err.textContent = /Invalid login/i.test(x.message) ? 'E-mail ou senha incorretos' : x.message; go.disabled = false; }
       } }, brandEl(), h('p', {}, 'Administração da plataforma'), field('E-mail', em), field('Senha', pw), err, go)));
@@ -283,7 +332,7 @@
             try { await call('plataforma_salvar_restaurante', { p_id: r.id, p_nome: r.nome, p_slug: r.slug, p_ativo: !r.ativo, p_motivo: motivo }); toast(r.ativo ? 'Bloqueado' : 'Desbloqueado'); painel(); } catch (e) { toast(e.message); }
           } }, r.ativo ? 'Bloquear' : 'Desbloquear'))));
       root.replaceChildren(
-        h('div', { class: 'top' }, brandEl(), h('span', { class: 'sp' }), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair')),
+        h('div', { class: 'top' }, topBrand(), h('b', { class: 'tag-adm' }, 'Administração'), h('span', { class: 'sp' }), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair')),
         h('div', { class: 'main' },
           h('div', { class: 'sec' }, h('h2', {}, 'Novo restaurante'),
             h('div', { class: 'grid3' }, field('Nome', nome), field('Endereço (slug)', slug), field('Login do responsável', al), field('Nome do responsável', an), field('Senha inicial', as)),
@@ -293,6 +342,7 @@
             } }, 'Criar restaurante'))),
           h('div', { class: 'sec' }, h('h2', {}, 'Restaurantes (' + rs.length + ')'),
             rs.length ? h('div', { class: 'tscroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Status', 'Estrutura', 'Agora', 'Uso', 'Cardápio publicado', ''].map(x => h('th', {}, x)))), h('tbody', {}, rs.map(linha)))) : h('p', { class: 'mut' }, 'Nenhum restaurante ainda.'))));
+      root.append(footEl());
     }
     function editar(r) {
       const nome = h('input', { id: 'e-nome', value: r.nome }), slug = h('input', { id: 'e-slug', value: r.slug });

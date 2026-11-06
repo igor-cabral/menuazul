@@ -15,7 +15,10 @@ if (/\/\*\{\{/.test(html)) throw new Error('Marcador de template não preenchido
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(new URL('index.html', out), html);
-fs.writeFileSync(new URL('_headers', out), '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  X-Frame-Options: DENY\n/config.js\n  Cache-Control: no-cache\n');
+await import('./build.mjs'); // gera editor.html (o mesmo de `npm run build`); o painel do restaurante o carrega para administradores
+fs.copyFileSync(new URL('./editor.html', import.meta.url), new URL('editor.html', out));
+fs.cpSync(new URL('./web/brand/', import.meta.url), new URL('brand/', out), { recursive: true }); // logos e ícones da marca
+fs.writeFileSync(new URL('_headers', out), '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  X-Frame-Options: DENY\n/config.js\n  Cache-Control: no-cache\n/brand/*\n  Cache-Control: public, max-age=86400\n');
 fs.copyFileSync(new URL(process.env.CONFIG_FILE ? pathToFileURL(path.resolve(process.env.CONFIG_FILE)).href : './web/config.js', import.meta.url), new URL('config.js', out));
 if (/SEU-PROJETO|SUA-CHAVE/.test(read('./web/config.js')) && !process.env.CONFIG_FILE) console.warn('AVISO: web/config.js ainda tem a URL/chave de exemplo.');
 console.log((process.env.WEB_OUT || 'dist') + '/ gerado —', (html.length / 1024).toFixed(0), 'KB');

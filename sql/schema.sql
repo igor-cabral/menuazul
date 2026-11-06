@@ -847,6 +847,38 @@ begin
   return jsonb_build_object('itens', v_n);
 end $$;
 
+-- ---------- editor de cardápio no painel do restaurante (só admin) ----------
+-- O admin lê e publica o cardápio do PRÓPRIO restaurante (vem da sessão, nunca do parâmetro).
+create or replace function admin_cardapio_get(p_token uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['admin']);
+  return (select jsonb_build_object('cardapio', r.cardapio, 'publicado_em', r.publicado_em) from restaurantes r where r.id = s.restaurante_id);
+end $$;
+
+create or replace function admin_publicar(p_token uuid, p_modelo jsonb, p_itens jsonb) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; v_n int;
+begin
+  s := _sessao(p_token, array['admin']);
+  if p_modelo is null or jsonb_typeof(p_modelo) <> 'object' or p_itens is null or jsonb_typeof(p_itens) <> 'array' then raise exception 'Cardápio inválido'; end if;
+  update restaurantes set cardapio = p_modelo, publicado_em = now() where id = s.restaurante_id;
+  delete from cardapio where restaurante_id = s.restaurante_id;
+  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado)
+  select s.restaurante_id, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false)
+  from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean);
+  get diagnostics v_n = row_count;
+  return jsonb_build_object('itens', v_n);
+end $$;
+
+-- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
+create or replace function _foto_ok(p_nome text) returns boolean
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(p_nome ~ '^[a-z0-9][a-z0-9-]*/[0-9a-f]{12}\.(webp|jpe?g|png|gif|avif)$', false)
+    and exists (select 1 from restaurantes r where r.ativo and r.slug = split_part(p_nome, '/', 1));
+$$;
+
 -- ---------- permissões ----------
 alter table plataforma_admins enable row level security;
 alter table restaurantes enable row level security;
@@ -876,7 +908,7 @@ grant execute on function
   admin_mesas(uuid), admin_criar_mesas(uuid, int), admin_salvar_mesa(uuid, uuid, text, boolean), admin_apagar_mesa(uuid, uuid),
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
-  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean)
+  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), _foto_ok(text)
 to anon, authenticated;
 
 grant execute on function
@@ -885,11 +917,14 @@ grant execute on function
   plataforma_usuario_salvar(uuid, uuid, text, text, text, text, boolean), plataforma_publicar(uuid, jsonb, jsonb)
 to authenticated;
 
--- ---------- fotos (Supabase Storage): só o dono da plataforma envia; qualquer um lê ----------
+-- ---------- fotos (Supabase Storage): qualquer um lê; o dono envia/altera; o painel do restaurante só ENVIA fotos novas (nome = hash, sem sobrescrever) ----------
 do $$
 begin
   if exists (select 1 from pg_namespace where nspname = 'storage') then
-    execute $q$insert into storage.buckets (id, name, public) values ('cardapios', 'cardapios', true) on conflict (id) do update set public = true$q$;
+    execute $q$insert into storage.buckets (id, name, public, file_size_limit) values ('cardapios', 'cardapios', true, 5242880) on conflict (id) do update set public = true, file_size_limit = 5242880$q$;
+    execute 'drop policy if exists "cardapios_envio_painel" on storage.objects';
+    execute $q$create policy "cardapios_envio_painel" on storage.objects for insert to anon, authenticated
+      with check (bucket_id = 'cardapios' and public._foto_ok(name))$q$;
     execute 'drop policy if exists "cardapios_escrita" on storage.objects';
     execute $q$create policy "cardapios_escrita" on storage.objects for all to authenticated
       using (bucket_id = 'cardapios' and exists (select 1 from public.plataforma_admins where user_id = auth.uid()))

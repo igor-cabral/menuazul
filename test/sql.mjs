@@ -92,6 +92,25 @@ await good('admin_item_esgotado', { p_token: tokA, p_item: 'suco', p_esgotado: t
 ok(JSON.stringify((await good('publico_cardapio', { p_slug: 'pizza-boa' })).esgotados) === '["suco"]', 'item esgotado aparece na lista');
 ok(/não encontrado/.test(await bad('admin_item_esgotado', { p_token: tokB, p_item: 'suco', p_esgotado: true })), 'B não mexe no item do A');
 
+console.log('5b) editor no painel: admin lê e publica só o próprio cardápio');
+{
+  const itX = [{ id: 'novo', nome: 'Novo', preco: 12, variantes: [], adicionais: [], esgotado: false }];
+  ok(/sessao_invalida/.test(await bad('admin_publicar', { p_token: cxA, p_modelo: {}, p_itens: itX })), 'caixa não publica');
+  ok(/sessao_invalida/.test(await bad('admin_publicar', { p_token: kdA, p_modelo: {}, p_itens: itX })), 'cozinha não publica');
+  ok(/sessao_invalida/.test(await bad('admin_cardapio_get', { p_token: cxA })), 'caixa não lê o cardápio do editor');
+  ok(/Cardápio inválido/.test(await bad('admin_publicar', { p_token: tokA, p_modelo: [], p_itens: itX })), 'modelo inválido recusado');
+  await good('admin_publicar', { p_token: tokA, p_modelo: { name: 'Pizza Nova' }, p_itens: itX });
+  ok((await good('admin_cardapio_get', { p_token: tokA })).cardapio.name === 'Pizza Nova', 'admin lê o que publicou');
+  ok((await good('publico_cardapio', { p_slug: 'pizza-boa' })).modelo.name === 'Pizza Nova', 'cardápio público do A mudou');
+  ok((await good('publico_cardapio', { p_slug: 'burger' })).modelo.name === 'Burger', 'cardápio do B não foi tocado');
+  ok((await be.query('select count(*)::int c from cardapio where restaurante_id = $1', [A])).rows[0].c === 1, 'tabela de preços do A trocada');
+  ok((await be.query('select count(*)::int c from cardapio where restaurante_id = $1', [B])).rows[0].c === 1, 'tabela de preços do B intacta');
+  await good('admin_publicar', { p_token: tokA, p_modelo: { name: 'Pizza Boa', theme: { primary: '#d00' } }, p_itens: itA }); // volta ao estado do teste
+  const foto = async n => (await be.query('select _foto_ok($1) as ok', [n])).rows[0].ok;
+  ok(await foto('pizza-boa/0123456789ab.webp'), 'caminho de foto válido');
+  ok(!(await foto('inexistente/0123456789ab.webp')) && !(await foto('pizza-boa/foto.webp')) && !(await foto('pizza-boa/0123456789ab.svg')) && !(await foto('pizza-boa/a/0123456789ab.png')), 'caminhos inválidos recusados (slug, nome, svg, subpasta)');
+}
+
 console.log('6) fluxo de pedido e isolamento');
 const codA = mesasA[0].codigo, codB = mesasB[0].codigo;
 ok(/mesa_invalida/.test(await bad('publico_info', { p_slug: 'pizza-boa', p_codigo: codB })), 'código da mesa do B não abre no A');
