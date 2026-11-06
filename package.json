@@ -1,0 +1,27 @@
+{
+  "name": "gerador-cardapios",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:web": "node build-web.mjs",
+    "dev:web": "npm run build:web && wrangler dev",
+    "deploy": "npm run build:web && wrangler deploy",
+    "test": "npm run test:sql && npm run test:e2e",
+    "test:sql": "node test/sql.mjs && node test/seguranca-admin.mjs",
+    "test:e2e": "node build.mjs && node test/plataforma.mjs && node test/publicar.mjs && node test/smoke.mjs",
+    "test:worker": "node test/worker.mjs",
+    "setup:tests": "playwright install chromium"
+  },
+  "dependencies": {
+    "jszip": "^3.10.2",
+    "qrcode-generator": "^2.0.4"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.14",
+    "playwright": "^1.64.1",
+    "sharp": "^0.35.5",
+    "wrangler": "^4.156.1"
+  }
+}

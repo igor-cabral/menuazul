@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Worker só com arquivos estáticos (sem código de servidor). O nome precisa ser igual ao do Worker já criado no Cloudflare.
+  "name": "menuazul",
+  "main": "./worker/index.js", // só atende pedidos sem arquivo que NÃO são navegação: devolve 404 (ver o arquivo)
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    // Pasta GERADA por `npm run build:web` (a pasta web/ é só o código-fonte, com marcadores não preenchidos).
+    "directory": "./dist",
+    // Rotas como /admin, /restaurante e /restaurante/codigo não são arquivos: navegações caem no index.html.
+    // Pedidos que NÃO são navegação (script, imagem, json) vão para worker/index.js, que responde 404.
+    "not_found_handling": "single-page-application"
+  }
+}
