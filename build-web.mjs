@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 const read = p => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 const safe = s => s.replace(/<\/script/gi, '<\\/script');
-const bundle = ['api', 'runtime-site', 'runtime-kds', 'runtime-caixa', 'generator'].map(n => read('./src/' + n + '.js')).concat(read('./web/portal.js')).join('\n');
+const bundle = ['api', 'runtime-site', 'runtime-kds', 'runtime-caixa', 'generator'].map(n => read('./src/' + n + '.js')).concat(read('./web/portal.js').replace('__APP_VERSION__', JSON.parse(read('./package.json')).version)).join('\n');
 const html = read('./web/index.html')
   .replace('/*{{CSS}}*/', () => read('./web/portal.css'))
   .replace('/*{{QR}}*/', () => safe(read('./node_modules/qrcode-generator/dist/qrcode.js')))
@@ -17,7 +17,8 @@ fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(new URL('index.html', out), html);
 await import('./build.mjs'); // gera editor.html (o mesmo de `npm run build`); o painel do restaurante o carrega para administradores
 fs.copyFileSync(new URL('./editor.html', import.meta.url), new URL('editor.html', out));
-fs.writeFileSync(new URL('_headers', out), '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  X-Frame-Options: DENY\n/config.js\n  Cache-Control: no-cache\n');
+fs.cpSync(new URL('./web/brand/', import.meta.url), new URL('brand/', out), { recursive: true }); // logos e ícones da marca
+fs.writeFileSync(new URL('_headers', out), '/*\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  X-Frame-Options: DENY\n/config.js\n  Cache-Control: no-cache\n/brand/*\n  Cache-Control: public, max-age=86400\n');
 fs.copyFileSync(new URL(process.env.CONFIG_FILE ? pathToFileURL(path.resolve(process.env.CONFIG_FILE)).href : './web/config.js', import.meta.url), new URL('config.js', out));
 if (/SEU-PROJETO|SUA-CHAVE/.test(read('./web/config.js')) && !process.env.CONFIG_FILE) console.warn('AVISO: web/config.js ainda tem a URL/chave de exemplo.');
 console.log((process.env.WEB_OUT || 'dist') + '/ gerado —', (html.length / 1024).toFixed(0), 'KB');

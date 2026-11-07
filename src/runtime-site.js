@@ -463,12 +463,26 @@ function siteRuntime() {
       }, function () { S.render = null; });
     }
 
+    // Conta encerrada: agradecimento do restaurante + "Uma experiência Menu Azul"; em 5 s vai para a página inicial da plataforma
     function endScreen() {
       if (d.querySelector('.ov.end')) return;
-      var ov = el('div', { class: 'ov end' }, [el('div', { class: 'sheet' }, [
-        el('h2', { text: 'Conta encerrada' }), el('p', { class: 'muted', text: 'Obrigado pela visita! Volte sempre. 💛' }),
-        el('button', { class: 'send go', type: 'button', text: 'Voltar ao cardápio', onclick: function () { ov.remove(); d.body.classList.remove('noscroll'); } })])]);
+      var home = location.origin + '/', left = 5, tick = null;
+      var cd = el('p', { class: 'end-cd', text: 'Voltando para o Menu Azul em 5s…' });
+      function stay() { clearInterval(tick); ov.remove(); d.body.classList.remove('noscroll'); }
+      var ov = el('div', { class: 'ov end', role: 'dialog', 'aria-live': 'polite' }, [el('div', { class: 'endcard' }, [
+        SYS && SYS.logo ? el('img', { class: 'end-logo', src: SYS.logo, alt: '' }) : null,
+        el('h2', { text: 'Obrigado pela visita!' }),
+        el('p', { class: 'muted', text: (SYS && SYS.nome ? SYS.nome + ' agradece a sua presença. ' : '') + 'Volte sempre! 💛' }),
+        el('div', { class: 'end-exp' }, [el('span', { text: 'Uma experiência' }), el('img', { src: home + 'brand/menuazul.png', alt: 'Menu Azul' })]),
+        cd,
+        el('button', { class: 'end-stay', type: 'button', text: 'Ficar no cardápio', onclick: stay }),
+        el('div', { class: 'end-bar' })])]);
       d.body.appendChild(ov); d.body.classList.add('noscroll');
+      tick = setInterval(function () {
+        left--;
+        if (left <= 0) { clearInterval(tick); location.href = home; return; }
+        cd.textContent = 'Voltando para o Menu Azul em ' + left + 's…';
+      }, 1000);
     }
 
     var timer = null, busy = false;

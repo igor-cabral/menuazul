@@ -95,8 +95,14 @@ function caixaRuntime(app, CFG) {
   var S = { tab: 'mesas', mesas: [], cfg: {}, offset: 0, online: true, sig: '', seen: null, resumo: null, open: null };
   var timer = null, ctx = null, view = null;
 
+  // título da aba com a contagem de contas pedidas, lembrete sonoro a cada 30 s enquanto houver conta pedida e aviso se o som estiver bloqueado
+  var baseTitle = d.title, sndEl = null;
+  function setTitle(n) { d.title = n ? '(' + n + ') ' + baseTitle : baseTitle; }
+  function sndLabel() { return !sound ? '🔕 Som' : (ctx && ctx.state === 'running' ? '🔔 Som' : '🔇 Liberar som'); }
+  function unlock() { if (sound) { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) {} } }
   function beep() {
     if (!sound) return;
+    S.lastBeep = Date.now();
     try {
       ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume();
       var o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = 660; o.connect(g); g.connect(ctx.destination);
@@ -112,7 +118,7 @@ function caixaRuntime(app, CFG) {
   function shell() {
     app.textContent = '';
     dot = el('span', { class: 'dot' + (S.online ? '' : ' off') });
-    var snd = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sound ? '🔔 Som' : '🔕 Som', onclick: function () { sound = !sound; ls('gc-caixa-sound', sound ? '1' : '0'); snd.textContent = sound ? '🔔 Som' : '🔕 Som'; beep(); } });
+    var snd = sndEl = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sndLabel(), onclick: function () { sound = !sound; ls('gc-caixa-sound', sound ? '1' : '0'); beep(); snd.textContent = sndLabel(); } });
     var tabs = el('div', { class: 'tabs' }, [['mesas', 'Mesas'], ['resumo', 'Resumo do dia']].map(function (t) {
       return el('button', { type: 'button', class: S.tab === t[0] ? 'on' : '', 'data-tab': t[0], text: t[1], onclick: function () { S.tab = t[0]; shell(); if (t[0] === 'resumo') loadResumo(); else paint(); } });
     }));
@@ -287,6 +293,8 @@ function caixaRuntime(app, CFG) {
       var seen = {}, alert_ = false;
       r.mesas.forEach(function (m) { if (m.comanda) { seen[m.id] = (m.comanda.conta_pedida ? 'c' : '') + m.comanda.prontos; if (S.seen && (S.seen[m.id] === undefined ? false : S.seen[m.id] !== seen[m.id]) && (m.comanda.conta_pedida || Number(m.comanda.prontos))) alert_ = true; } });
       S.seen = seen; if (alert_) beep();
+      var pend = r.mesas.filter(function (m) { return m.comanda && m.comanda.conta_pedida; }).length;
+      setTitle(pend); if (pend && sound && Date.now() - (S.lastBeep || 0) > 30000) beep();
       var sig = JSON.stringify(r.mesas);
       if (sig !== S.sig || wasOff) { S.sig = sig; S.mesas = r.mesas; paint(); }
       if (DR) return drawerLoad(false);
@@ -300,6 +308,8 @@ function caixaRuntime(app, CFG) {
   function vis() { if (!d.hidden) refresh(); }
   d.addEventListener('visibilitychange', vis);
   var tk = setInterval(function () { if (S.tab === 'mesas' && S.mesas.length) S.sig = ''; }, 60000);
+  var tk2 = setInterval(function () { if (sndEl) sndEl.textContent = sndLabel(); }, 1000);
+  d.addEventListener('pointerdown', unlock);
   start();
-  return function stop() { stopped = true; clearTimeout(timer); clearInterval(tk); d.removeEventListener('visibilitychange', vis); closeDrawer(); };
+  return function stop() { stopped = true; clearTimeout(timer); clearInterval(tk); clearInterval(tk2); d.removeEventListener('visibilitychange', vis); d.removeEventListener('pointerdown', unlock); d.title = baseTitle; closeDrawer(); };
 }

@@ -318,6 +318,20 @@ footer a{text-decoration:underline;text-underline-offset:3px}
 .ov{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.52);display:flex;align-items:flex-end;justify-content:center}
 .sheet{background:var(--bg);color:var(--text);width:100%;max-width:520px;max-height:92vh;overflow:auto;border-radius:22px 22px 0 0;padding:20px 18px calc(22px + env(safe-area-inset-bottom));animation:up .22s ease-out}
 @keyframes up{from{transform:translateY(40px);opacity:0}}
+.ov.end{align-items:center;padding:20px;background:linear-gradient(160deg,var(--primary),color-mix(in srgb,var(--primary) 40%,#000))}
+.endcard{position:relative;overflow:hidden;width:100%;max-width:420px;text-align:center;background:var(--bg);color:var(--text);border-radius:28px;padding:34px 24px 0;box-shadow:0 30px 80px rgba(0,0,0,.4);animation:endin .6s cubic-bezier(.2,.8,.2,1) both}
+.end-logo{width:96px;height:96px;border-radius:50%;object-fit:cover;background:var(--surface);border:4px solid var(--bg);box-shadow:0 8px 26px rgba(0,0,0,.25);margin:0 auto 14px;display:block}
+.endcard h2{font-family:var(--fh);font-size:1.7rem;line-height:1.15;margin-bottom:6px}
+.endcard .muted{margin-bottom:20px}
+.end-exp{display:inline-flex;flex-direction:column;align-items:center;gap:6px;background:#fff;border-radius:18px;padding:12px 22px;box-shadow:0 6px 20px rgba(0,0,0,.12)}
+.end-exp span{font-size:.68rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#5b6b8a}
+.end-exp img{height:30px;width:auto;display:block}
+.end-cd{margin-top:18px;font-size:.84rem;color:var(--muted)}
+.end-stay{background:none;border:0;color:var(--primary);font:inherit;font-size:.84rem;font-weight:700;text-decoration:underline;cursor:pointer;padding:6px 10px;margin-bottom:12px}
+.end-bar{height:5px;background:var(--primary);transform-origin:left;animation:endbar 5s linear forwards}
+@keyframes endin{from{opacity:0;transform:translateY(24px) scale(.96)}}
+@keyframes endbar{to{transform:scaleX(0)}}
+@media(prefers-reduced-motion:reduce){.endcard,.end-bar{animation:none}}
 @media(min-width:600px){.ov{align-items:center}.sheet{border-radius:22px}}
 .sh-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px}
 .sh-head h2{font-family:var(--fh);font-size:1.25rem;line-height:1.2}
@@ -413,7 +427,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       sched: (hasSched && o.showOpenStatus) ? c.schedule.map(s => ({ o: s.open ? 1 : 0, f: s.from, t: s.to })) : [],
       items: {},
       cart: null,
-      sys: mesa ? { url: String(mesa.url).replace(/\/+$/, ''), key: mesa.key, slug: mesa.slug, codigo: mesa.codigo } : null
+      sys: mesa ? { url: String(mesa.url).replace(/\/+$/, ''), key: mesa.key, slug: mesa.slug, codigo: mesa.codigo, nome: d.name || '', logo: logoSrc || '' } : null
     };
     if (cartOn) {
       const types = [];

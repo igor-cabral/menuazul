@@ -11,12 +11,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const OUT = process.env.OUT || tmpDir('gcp-');
 const WEB = path.join(OUT, 'web'); fs.mkdirSync(WEB, { recursive: true });
 
-const errors = []; let fails = 0, promptAnswer = 'ok';
+const errors = []; let fails = 0, promptAnswer = 'ok', onDialog = null; // onDialog: trata o próximo diálogo de forma especial (ex.: dispensar)
 const ok = (c, msg) => { console.log((c ? '  ✓ ' : '  ✗ ') + msg); if (!c) fails++; };
 const watch = (p, tag) => {
   p.on('pageerror', e => errors.push(tag + ' pageerror: ' + e.message));
   p.on('console', m => { if (m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource|status of 4\d\d/.test(m.text())) errors.push(tag + ' console: ' + m.text()); });
-  p.on('dialog', d => d.accept(d.type() === 'prompt' ? promptAnswer : undefined));
+  p.on('dialog', d => { if (onDialog) { const f = onDialog; onDialog = null; return f(d); } d.accept(d.type() === 'prompt' ? promptAnswer : undefined); });
 };
 
 const be = await startFakeBackend();
@@ -101,6 +101,9 @@ await gerente.click('.nav a:has-text("Esgotados")');
 await gerente.waitForSelector('.line[data-item="batata"]');
 ok(await gerente.locator('.line[data-item]').count() === 2, 'lista de itens para marcar esgotado');
 await gerente.screenshot({ path: path.join(OUT, 'admin-restaurante.png') });
+ok(/^v\d+\.\d+\.\d+$/.test((await gerente.textContent('.top .ver')).trim()), 'versão da plataforma no menu do admin');
+await gerente.click('.nav a:has-text("Relatórios")'); await gerente.waitForSelector('.kpis');
+ok(await gerente.locator('.kpi').count() >= 6 && await gerente.locator('.hours .hc').count() === 24, 'relatórios do admin abrem com indicadores e horário de pico');
 await gerente.click('.nav a:has-text("Editor de cardápio")');
 await gerente.waitForSelector('.edwrap iframe');
 const ed = await (await gerente.locator('.edwrap iframe').elementHandle()).contentFrame();
@@ -112,6 +115,12 @@ await ed.waitForSelector('#toast.on:has-text("Publicado")');
 ok((await be.query("select cardapio->>'name' as n from restaurantes where slug = 'pizzaria-boa'")).rows[0].n === 'Pizzaria Boa Editada', 'Salvar e publicar muda o cardápio online');
 ok((await be.query('select count(*)::int as c from cardapio where restaurante_id = $1', [ids['pizzaria-boa']])).rows[0].c === 2, 'itens do sistema continuam publicados');
 await be.rpc('plataforma_publicar', { p_rest: ids['pizzaria-boa'], p_modelo: modelo('Pizzaria Boa', '20,00'), p_itens: itens(20) }, dono); // volta ao estado do teste
+// aviso ao sair do editor com alterações não publicadas
+await ed.evaluate(() => { const s = GC.state(); s.name = 'Alterado'; s.updatedAt = Date.now() + 5000; });
+let perguntou = false; onDialog = d => { perguntou = /NÃO foram publicadas/.test(d.message()); d.dismiss(); };
+await gerente.click('.nav a:has-text("Mesas e QR")'); await gerente.waitForTimeout(300);
+ok(perguntou && await gerente.locator('.edwrap').count() === 1, 'sair do editor com alterações pergunta e permite ficar');
+await ed.evaluate(() => { const s = GC.state(); s.name = 'Pizzaria Boa'; s.hostPub = s.updatedAt = Date.now() + 9000; });
 await gerente.click('.nav a:has-text("Mesas e QR")'); await gerente.waitForSelector('#add-mesas');
 ok(await gerente.locator('.edwrap').count() === 0, 'voltar ao painel remove o editor');
 
@@ -169,7 +178,7 @@ await bk.waitForSelector('#add-mesas');
 ok(await bk.locator('.line[data-mesa]').count() === 0, 'admin do Burger não vê mesas da Pizzaria');
 const nf = await newPage('nf'); await nf.goto(BASE + '/nao-existe');
 await nf.waitForSelector('h1'); ok(/não encontrado/i.test(await nf.textContent('h1')), '/slug inexistente');
-await nf.goto(BASE + '/'); await nf.waitForSelector('h1'); ok(/Menu Azul/.test(await nf.textContent('h1')), 'página inicial');
+await nf.goto(BASE + '/'); await nf.waitForSelector('.herologo'); ok(await nf.getAttribute('.herologo', 'alt') === 'Menu Azul' && await nf.locator('.fcard').count() === 4, 'página inicial com a marca e os 4 destaques');
 const pub = await newPage('pub', phone); await pub.goto(BASE + '/pizzaria-boa/menu'); await pub.waitForSelector('h1');
 ok(/Pizzaria Boa/.test(await pub.textContent('h1')) && await pub.locator('.mesabar').count() === 0, '/slug/menu mostra o cardápio sem pedido por mesa');
 

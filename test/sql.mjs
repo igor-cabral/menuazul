@@ -149,6 +149,25 @@ await good('caixa_pagar', { p_token: cxTok, p_comanda: cA, p_metodo: 'dinheiro',
 await good('caixa_encerrar', { p_token: cxTok, p_comanda: cA, p_forcar: true });
 ok(/sessao_invalida|conta_encerrada/.test(await bad('publico_pedir', { p_cliente_token: ana.cliente_token, p_itens: [{ id: 'x1', q: 1 }] })), 'cliente não pede em conta encerrada');
 
+console.log('6b) relatórios do dono');
+{
+  ok(/sessao_invalida/.test(await bad('admin_relatorio', { p_token: cxTok, p_de: null, p_ate: null })), 'caixa não vê relatórios');
+  ok(/sessao_invalida/.test(await bad('admin_relatorio', { p_token: kdA, p_de: null, p_ate: null })), 'cozinha não vê relatórios');
+  ok(/Período inválido/.test(await bad('admin_relatorio', { p_token: tokA, p_de: '2026-02-10', p_ate: '2026-02-01' })), 'período invertido recusado');
+  ok(/muito longo/.test(await bad('admin_relatorio', { p_token: tokA, p_de: '2024-01-01', p_ate: '2026-01-01' })), 'período maior que 1 ano recusado');
+  const rA = await good('admin_relatorio', { p_token: tokA, p_de: null, p_ate: null });
+  ok(near(rA.atual.faturamento, 55) && near(rA.atual.por_metodo.dinheiro, 55) && rA.atual.por_metodo.pix === undefined, 'faturamento e forma de pagamento do A (sem o pix do B)');
+  ok(rA.atual.contas >= 1 && rA.atual.ticket_medio > 0 && rA.atual.pedidos >= 1, 'contas, ticket médio e pedidos do A');
+  ok(Array.isArray(rA.mais_vendidos) && rA.mais_vendidos.length > 0 && rA.por_hora.length === 24, 'mais vendidos e horário de pico');
+  ok(rA.por_hora.reduce((x, y) => x + y, 0) === rA.atual.pedidos, 'pedidos por hora somam o total de pedidos');
+  ok(rA.menos_vendidos.length > 0 && rA.dias === 1 && rA.anterior_ate < rA.de, 'menos vendidos e período anterior');
+  ok(rA.atual.preparo_min !== null, 'tempo de preparo medido (pedido marcado como pronto)');
+  ok(rA.esgotados.length >= 1 && rA.esgotados[0].vezes >= 1, 'log de itens esgotados');
+  const rB = await good('admin_relatorio', { p_token: tokB, p_de: null, p_ate: null });
+  ok(near(rB.atual.faturamento, 20) && near(rB.atual.por_metodo.pix, 20) && rB.atual.por_metodo.dinheiro === undefined, 'relatório do B só tem os dados do B');
+  ok((await be.query('select count(*)::int c from pedidos where pronto_em is not null')).rows[0].c >= 1, 'pedido guarda o horário de pronto');
+}
+
 console.log('7) bloqueio de restaurante');
 await good('plataforma_salvar_restaurante', { p_id: B, p_nome: 'Burger', p_slug: 'burger', p_ativo: false, p_motivo: 'Inadimplente' }, dono);
 ok((await be.query('select count(*)::int n from staff_sessoes where restaurante_id = $1', [B])).rows[0].n === 0, 'sessões do restaurante bloqueado foram apagadas');

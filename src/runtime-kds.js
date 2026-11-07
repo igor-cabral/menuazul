@@ -70,8 +70,13 @@ function kdsRuntime(app, CFG) {
   var PREV = { preparando: ['novo', '↩ Voltar'], pronto: ['preparando', '↩ Voltar'] };
 
   function audio() { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) {} }
+  // lembrete sonoro a cada 30 s enquanto houver pedido novo parado, e aviso se o som estiver bloqueado pelo navegador
+  var sndEl = null;
+  function sndLabel() { return !sound ? '🔕 Ativar som' : (ctx && ctx.state === 'running' ? '🔔 Som ligado' : '🔇 Toque para liberar o som'); }
+  function unlock() { if (sound) audio(); }
   function beep() {
     if (!sound) return;
+    S.lastBeep = Date.now();
     try {
       audio();
       [880, 1175, 880].forEach(function (f, i) {
@@ -109,8 +114,8 @@ function kdsRuntime(app, CFG) {
   function board() {
     app.textContent = '';
     connEl = el('span', { class: 'dot' + (S.online ? '' : ' off'), title: S.online ? 'Conectado' : 'Sem conexão' });
-    var snd = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sound ? '🔔 Som ligado' : '🔕 Ativar som', onclick: function () {
-      sound = !sound; ls('gc-kds-sound', sound ? '1' : '0'); if (sound) { audio(); beep(); } snd.textContent = sound ? '🔔 Som ligado' : '🔕 Ativar som';
+    var snd = sndEl = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sndLabel(), onclick: function () {
+      sound = !sound; ls('gc-kds-sound', sound ? '1' : '0'); if (sound) { audio(); beep(); } snd.textContent = sndLabel();
     } });
     app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '👨‍🍳 Cozinha · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
     var cols = COLS.map(function (c) {
@@ -151,6 +156,8 @@ function kdsRuntime(app, CFG) {
         if (fresh.length) { fresh.forEach(function (p) { S.fresh[p.id] = Date.now() + 6000; }); beep(); }
       }
       S.known = ids;
+      var novos = r.pedidos.filter(function (p) { return p.status === 'novo'; }).length;
+      if (novos && sound && Date.now() - (S.lastBeep || 0) > 30000) beep();
       var sig = JSON.stringify(r.pedidos);
       if (sig !== S.sig || wasOff) { S.sig = sig; S.pedidos = r.pedidos; board(); }
     }, function (e) {
@@ -161,9 +168,10 @@ function kdsRuntime(app, CFG) {
   function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, d.hidden ? 8000 : 3000); }
   function start() { board(); wake(); refresh().then(loop, loop); }
 
-  var tk = setInterval(tickTimes, 1000);
+  var tk = setInterval(function () { tickTimes(); if (sndEl) sndEl.textContent = sndLabel(); }, 1000);
+  d.addEventListener('pointerdown', unlock);
   function vis() { if (!d.hidden) { wake(); refresh(); } }
   d.addEventListener('visibilitychange', vis);
   start();
-  return function stop() { stopped = true; clearTimeout(timer); clearInterval(tk); d.removeEventListener('visibilitychange', vis); };
+  return function stop() { stopped = true; clearTimeout(timer); clearInterval(tk); d.removeEventListener('visibilitychange', vis); d.removeEventListener('pointerdown', unlock); };
 }

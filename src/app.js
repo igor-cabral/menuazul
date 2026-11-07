@@ -642,7 +642,9 @@
         local.updatedAt = local.hostPub; await DB.put(local);
       } else if (at !== undefined && local.hostSeen !== at) { local.hostSeen = at; await DB.put(local); }
     } catch (e) { toast('⚠ ' + (e.message || 'Erro ao carregar o cardápio online')); if (!local) return false; }
-    await openRestaurant(id); return true;
+    await openRestaurant(id);
+    if (hostDirty()) toast('Você tem alterações não publicadas neste navegador. Clique em "Salvar e publicar" para enviar aos clientes.');
+    return true;
   }
   function panelPlatform() {
     if (HOST) return panelHost();
@@ -891,7 +893,7 @@
     $('#view-home').hidden = true; $('#view-editor').hidden = false;
     ['#btn-home', '#btn-save', '#btn-backup', '#btn-export'].forEach(s => { $(s).hidden = false; });
     $('#cur-name').textContent = cur.name; setStatus('');
-    if (HOST) { $('#btn-home').hidden = true; $('#btn-save').textContent = '☁ Salvar e publicar'; $('#btn-save').classList.add('primary'); ui.tab = 'cardapio'; }
+    if (HOST) { $('#btn-home').hidden = true; $('#btn-save').textContent = '☁ Salvar e publicar'; $('#btn-save').classList.replace('ghost', 'primary'); $('#btn-export').classList.replace('primary', 'ghost'); ui.tab = 'cardapio'; }
     renderPanel(false); updatePreview();
   }
 
@@ -974,12 +976,13 @@
   window.addEventListener('pagehide', () => { saveNow(); });
 
   /* gancho de teste/depuração */
-  window.GC = { state: () => cur, saveNow, makeZip, openRestaurant, showHome, DB, FS, fsSyncAll };
+  window.GC = { state: () => cur, saveNow, hostDirty: () => !!HOST && hostDirty(), makeZip, openRestaurant, showHome, DB, FS, fsSyncAll };
 
   (async () => {
     await fsInit();
     if (FS.state === 'on') { try { await fsSyncAll(); } catch (e) { /* segue */ } }
     if (HOST) { // painel do restaurante: um único cardápio (o do restaurante logado); a lista local de restaurantes não aparece
+      $('#app-title').textContent = 'Editor de cardápio'; $('.top b img').hidden = true; // o painel já mostra a marca
       ['#btn-new', '#btn-import', '#btn-backup-all'].forEach(x => { const e = $(x); if (e) e.hidden = true; });
       let ok = false; try { ok = await hostOpen(); } catch (e) { toast('⚠ ' + e.message); }
       if (!ok) $('#home-list').replaceChildren(h('div', { class: 'emptyhome', style: 'grid-column:1/-1' }, 'Não foi possível abrir o cardápio. Volte ao painel e abra o editor de novo.'));

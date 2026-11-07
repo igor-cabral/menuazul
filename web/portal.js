@@ -7,7 +7,8 @@
 (function () {
   'use strict';
   const CFG = window.GC_CONFIG || {};
-  const BRAND = Object.assign({ name: 'Menu Azul', logo: '' }, CFG.brand);
+  const BRAND = Object.assign({ name: 'Menu Azul' }, CFG.brand), customLogo = !!BRAND.logo;
+  BRAND.logo = BRAND.logo || '/brand/menuazul.png'; BRAND.logoLight = BRAND.logoLight || '/brand/menuazul-claro.png'; BRAND.symbol = BRAND.symbol || '/brand/simbolo-claro.png';
   const root = document.getElementById('root');
   const rpc = makeApi(CFG.supabaseUrl, CFG.supabaseKey);
   const cssPortal = document.getElementById('css-portal'), cssScreen = document.getElementById('css-screen');
@@ -41,10 +42,16 @@
     const s = document.documentElement.style; s.setProperty('--primary', cor); s.setProperty('--on-primary', lum(cor) > .4 ? '#111' : '#fff');
   }
   function useCss(screen) { cssPortal.disabled = !!screen; cssScreen.textContent = screen || ''; }
-  const brandEl = () => h('div', { class: 'brand' }, BRAND.logo && h('img', { src: BRAND.logo, alt: '' }), BRAND.name);
+  const APP_VERSION = '__APP_VERSION__'; // vem do package.json no build
+  const verEl = () => h('span', { class: 'ver', title: 'Versão da plataforma' }, 'v' + APP_VERSION);
+  const brandEl = () => h('div', { class: 'brand plat' }, h('img', { src: BRAND.logo, alt: BRAND.name }), customLogo && BRAND.name);
+  const topBrand = () => h('a', { class: 'tbrand', href: '/', title: BRAND.name }, h('img', { src: BRAND.logoLight, alt: BRAND.name }));
+  const creditEl = () => h('a', { class: 'credit', href: 'https://igorcabral.dev.br', target: '_blank', rel: 'noopener', title: 'igor cabral. design & web' }, h('span', {}, 'Desenvolvido por'), h('img', { src: '/brand/igorcabral-claro.png', alt: 'igor cabral. design & web' }));
+  const footEl = () => h('footer', { class: 'foot' }, h('span', { class: 'fb' }, h('img', { src: BRAND.symbol, alt: '' }), BRAND.name + ' · cardápio digital e pedidos por mesa'), creditEl());
+  const authWrap = (card, powered) => h('div', { class: 'center' }, h('div', { class: 'stack' }, card, powered && h('div', { class: 'powered' }, 'Plataforma ', h('img', { src: BRAND.logoLight, alt: BRAND.name }))), creditEl());
   function msgPage(title, text) {
     useCss(null); document.title = title + ' — ' + BRAND.name;
-    root.replaceChildren(h('div', { class: 'center' }, h('div', { class: 'card' }, brandEl(), h('h1', {}, title), text && h('p', {}, text))));
+    root.replaceChildren(authWrap(h('div', { class: 'card' }, brandEl(), h('h1', {}, title), text && h('p', {}, text))));
   }
   function modal(title, build) {
     const dlg = h('dialog', {});
@@ -61,16 +68,37 @@
   function route() {
     const seg = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (!/^https?:\/\//.test(CFG.supabaseUrl || '') || /SEU-PROJETO/.test(CFG.supabaseUrl)) return msgPage('Configuração pendente', 'Preencha supabaseUrl e supabaseKey em config.js.');
-    if (!seg.length) return msgPage(BRAND.name, 'Acesse o endereço do seu restaurante para entrar.');
+    if (!seg.length) return home();
     if (seg[0].toLowerCase() === 'admin' && seg.length === 1) return plataforma();
     if (seg.length === 1) return restaurante(seg[0].toLowerCase());
     if (seg.length === 2) return menuPage(seg[0].toLowerCase(), seg[1].toLowerCase() === 'menu' ? null : seg[1].toLowerCase());
     msgPage('Página não encontrada');
   }
 
+  /* ---------- página inicial da plataforma ---------- */
+  function home() {
+    useCss(null); document.title = BRAND.name + ' — cardápio digital e pedidos por mesa';
+    const inp = h('input', { id: 'go-slug', placeholder: 'seu-restaurante', autocapitalize: 'none', autocomplete: 'off', spellcheck: false, 'aria-label': 'Endereço do seu restaurante' });
+    const feat = (ico, t, d) => h('div', { class: 'fcard' }, h('div', { class: 'fico' }, ico), h('h3', {}, t), h('p', {}, d));
+    root.replaceChildren(
+      h('div', { class: 'center hero' }, h('div', { class: 'stack wide' },
+        h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }),
+        h('h1', {}, 'Cardápio digital, pedidos por mesa e caixa em um só lugar'),
+        h('p', {}, 'O cliente pede pelo celular, a cozinha recebe e o caixa fecha a conta. Simples assim.'),
+        h('form', { class: 'gofrm', onsubmit: e => { e.preventDefault(); const s = slugify(inp.value); if (s) location.href = '/' + s; } },
+          h('span', { class: 'pre' }, location.host + '/'), inp, h('button', { class: 'btn', type: 'submit' }, 'Entrar')),
+        h('small', {}, 'Digite o endereço do seu restaurante para acessar o painel da equipe.')), creditEl()),
+      h('section', { class: 'feat' },
+        feat('📱', 'Cardápio por QR Code', 'Cada mesa tem o seu QR. O cliente abre o cardápio no celular e faz o pedido, sem baixar nada.'),
+        feat('👨‍🍳', 'Pedido direto na cozinha', 'Os pedidos aparecem na tela da cozinha, organizados por mesa.'),
+        feat('💳', 'Caixa e contas por mesa', 'Abra e feche comandas, registre pagamentos e acompanhe o resumo do dia.'),
+        feat('✏️', 'Editor de cardápio', 'Edite itens, preços e fotos e publique para os clientes com um clique.')),
+      footEl());
+  }
+
   /* ---------- cardápio (mesa ou público) ---------- */
   async function menuPage(slug, codigo) {
-    useCss(null); root.replaceChildren(h('div', { class: 'center' }, h('p', {}, 'Carregando cardápio…')));
+    useCss(null); root.replaceChildren(h('div', { class: 'center' }, h('div', { class: 'spin' }), h('p', {}, 'Carregando cardápio…')));
     let r;
     try { r = await rpc('publico_cardapio', { p_slug: slug }); } catch (e) {
       if (/restaurante_inexistente/.test(e.message)) return msgPage('Restaurante não encontrado', 'Confira o endereço ou o QR Code.');
@@ -115,10 +143,11 @@
     } },
       h('div', { class: 'brand' }, info.logo && h('img', { src: info.logo, alt: '' }), info.nome),
       h('p', {}, 'Acesso da equipe'), field('Usuário', user), field('Senha', pass), err, go);
-    root.replaceChildren(h('div', { class: 'center' }, form)); user.focus();
+    root.replaceChildren(authWrap(form, true)); user.focus();
   }
 
   let current = null; // tela ativa {stop}
+  let guardaEditor = () => {}; // pergunta antes de sair do editor com alterações não publicadas (definido em pEditor)
   const unmount = () => { const r = current && current.stop && current.stop(); current = null; document.querySelectorAll('.backpill').forEach(e => e.remove()); return r; }; // stop() pode devolver uma Promise (o editor grava antes de sair)
 
   function entrar(info, sess, KEY) {
@@ -127,7 +156,7 @@
     const call = (n, a) => rpc(n, Object.assign({ p_token: sess.token }, a || {})).catch(e => { if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) expirou(); throw e; });
     const kcfg = { api: rpc, token: sess.token, nome: info.nome, expired: expirou, logout: () => sair() };
     const admin = sess.papel === 'admin';
-    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'equipe', 'esgotados', 'editor', 'config'] : [sess.papel];
+    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel];
 
     let seq = 0;
     async function show() {
@@ -145,11 +174,13 @@
         return;
       }
       useCss(null);
-      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
+      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['relatorios', 'Relatórios'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
         .map(([k, l]) => h('a', { href: '#/' + k, class: k === t ? 'on' : '' }, l)));
       const body = h('div', { class: t === 'editor' ? 'edwrap' : 'main' });
-      root.replaceChildren(h('div', { class: 'top' }, h('b', {}, info.nome), nav, h('span', { class: 'sp' }), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair')), body);
-      ({ mesas: pMesas, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, editor: pEditor }[t])(body, call, info, sess);
+      const topEl = h('div', { class: 'top' }, h('img', { class: 'sym', src: BRAND.symbol, alt: BRAND.name }), h('b', {}, info.nome), nav, h('span', { class: 'sp' }), admin && verEl(), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair'));
+      root.replaceChildren(...[topEl, body, t !== 'editor' && footEl()].filter(Boolean)); // (o DOM transformaria false em texto)
+      if (t === 'editor') topEl.addEventListener('click', e => guardaEditor(e), true); // guardaEditor é definido depois, por pEditor
+      ({ mesas: pMesas, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, relatorios: pRelatorios, editor: pEditor }[t])(body, call, info, sess);
     }
     window.onhashchange = show; show();
   }
@@ -232,6 +263,57 @@
       }) : h('p', { class: 'mut' }, 'Cardápio ainda não publicado.')));
   }
 
+  /* ----- painel: relatórios do dono (só administradores) ----- */
+  async function pRelatorios(box, call) {
+    const brl = n => Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const num = n => Number(n || 0).toLocaleString('pt-BR');
+    const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const dm = x => String(x).slice(8, 10) + '/' + String(x).slice(5, 7);
+    const dia = n => { const d = new Date(); d.setDate(d.getDate() - n); return d; };
+    const PRE = [['hoje', 'Hoje', () => [dia(0), dia(0)]], ['7', '7 dias', () => [dia(6), dia(0)]], ['30', '30 dias', () => [dia(29), dia(0)]], ['mes', 'Este mês', () => { const d = dia(0); return [new Date(d.getFullYear(), d.getMonth(), 1), d]; }]];
+    const METODO = { dinheiro: 'Dinheiro', credito: 'Crédito', debito: 'Débito', pix: 'Pix', outro: 'Outro' };
+    const out = h('div', { class: 'rel' }), de = h('input', { type: 'date' }), ate = h('input', { type: 'date' });
+    const btns = PRE.map(([k, l, f]) => h('button', { class: 'btn sec sm', type: 'button', 'data-p': k, onclick: () => { const [a, b] = f(); de.value = iso(a); ate.value = iso(b); carregar(k); } }, l));
+    const delta = (a, b, inv) => {
+      if (b == null || Number(b) === 0) return h('small', { class: 'dl' }, a ? 'sem período anterior' : '');
+      const p = (Number(a) - Number(b)) / Number(b) * 100, up = p >= 0;
+      return h('small', { class: 'dl ' + ((up !== !!inv) ? 'up' : 'dn') }, (up ? '▲ ' : '▼ ') + Math.abs(p).toFixed(0) + '% vs período anterior');
+    };
+    const kpi = (t, v, d) => h('div', { class: 'kpi' }, h('span', { class: 'kt' }, t), h('b', {}, v), d);
+    const barras = (rows, fmt) => { const mx = Math.max(1, ...rows.map(r => r.v)); return rows.map(r => h('div', { class: 'bar' }, h('span', { class: 'bl' }, r.l), h('span', { class: 'bt' }, h('i', { style: 'width:' + (r.v / mx * 100) + '%' })), h('span', { class: 'bv' }, fmt(r.v)))); };
+    function desenhar(r) {
+      const a = r.atual, b = r.anterior, vazio = !a.pedidos && !a.faturamento;
+      const pico = r.por_hora.reduce((m, v, i) => v > r.por_hora[m] ? i : m, 0), h24 = r.por_hora.map((v, i) => ({ l: String(i).padStart(2, '0') + 'h', v }));
+      const giro = r.mesas_ativas && r.dias ? a.contas / r.mesas_ativas / r.dias : 0;
+      const met = Object.keys(a.por_metodo).concat(Object.keys(b.por_metodo).filter(k => !(k in a.por_metodo))).sort((x, y) => (a.por_metodo[y] || 0) - (a.por_metodo[x] || 0));
+      out.replaceChildren(...[
+        h('p', { class: 'mut' }, 'Período: ' + dm(r.de) + (r.dias > 1 ? ' a ' + dm(r.ate) : '') + ' · comparado com ' + dm(r.anterior_de) + (r.dias > 1 ? ' a ' + dm(r.anterior_ate) : '')),
+        vazio && h('p', { class: 'mut' }, 'Ainda não há vendas neste período.'),
+        h('div', { class: 'kpis' },
+          kpi('Faturamento', brl(a.faturamento), delta(a.faturamento, b.faturamento)),
+          kpi('Contas fechadas', num(a.contas), delta(a.contas, b.contas)),
+          kpi('Ticket médio', a.ticket_medio == null ? '—' : brl(a.ticket_medio), delta(a.ticket_medio, b.ticket_medio)),
+          kpi('Pedidos', num(a.pedidos), delta(a.pedidos, b.pedidos)),
+          kpi('Permanência média', a.permanencia_min == null ? '—' : Math.round(a.permanencia_min) + ' min', delta(a.permanencia_min, b.permanencia_min, true)),
+          kpi('Giro por mesa/dia', giro ? giro.toFixed(1).replace('.', ',') : '—', h('small', { class: 'dl' }, num(r.mesas_ativas) + ' mesas ativas')),
+          kpi('Preparo médio', a.preparo_min == null ? '—' : Number(a.preparo_min).toFixed(0) + ' min', a.preparo_min == null ? h('small', { class: 'dl' }, 'passa a aparecer com os novos pedidos') : delta(a.preparo_min, b.preparo_min, true))),
+        h('h3', {}, 'Horário de pico' + (a.pedidos ? ' · ' + String(pico).padStart(2, '0') + 'h' : '')), h('div', { class: 'hours' }, r.por_hora.map((v, i) => h('div', { class: 'hc', title: String(i).padStart(2, '0') + 'h: ' + v + ' pedidos' }, h('i', { style: 'height:' + (v / Math.max(1, ...r.por_hora) * 100) + '%' }), h('span', {}, i % 3 === 0 ? i : '')))),
+        h('div', { class: 'cols' },
+          h('div', {}, h('h3', {}, 'Mais vendidos'), r.mais_vendidos.length ? barras(r.mais_vendidos.map(x => ({ l: x.nome, v: x.qtd })), v => v + ' un.') : h('p', { class: 'mut' }, 'Sem vendas no período.')),
+          h('div', {}, h('h3', {}, 'Menos vendidos'), r.menos_vendidos.length ? r.menos_vendidos.map(x => h('div', { class: 'bar' }, h('span', { class: 'bl' }, x.nome), h('span', { class: 'bv' }, x.qtd === 0 ? 'nenhuma venda' : x.qtd + ' un.'))) : h('p', { class: 'mut' }, 'Cardápio ainda não publicado.'))),
+        h('h3', {}, 'Faturamento por forma de pagamento'), met.length ? met.map(k => h('div', { class: 'bar' }, h('span', { class: 'bl' }, METODO[k] || k), h('span', { class: 'bt' }, h('i', { style: 'width:' + ((a.por_metodo[k] || 0) / Math.max(1, a.faturamento) * 100) + '%' })), h('span', { class: 'bv' }, brl(a.por_metodo[k] || 0)), delta(a.por_metodo[k] || 0, b.por_metodo[k]))) : h('p', { class: 'mut' }, 'Sem pagamentos no período.'),
+        h('h3', {}, 'Itens que mais esgotam'), r.esgotados.length ? barras(r.esgotados.map(x => ({ l: x.nome, v: x.vezes })), v => v + (v === 1 ? ' vez' : ' vezes')) : h('p', { class: 'mut' }, 'Nenhum item marcado como esgotado no período (o registro começa a valer a partir desta versão).')].flat(Infinity).filter(Boolean));
+    }
+    async function carregar(k) {
+      btns.forEach(x => x.classList.toggle('on', x.dataset.p === k));
+      out.replaceChildren(h('p', { class: 'mut' }, 'Carregando…'));
+      try { desenhar(await call('admin_relatorio', { p_de: de.value || null, p_ate: ate.value || null })); } catch (e) { out.replaceChildren(h('p', { class: 'mut' }, e.status ? e.message : 'Sem conexão. Tente de novo.')); }
+    }
+    box.replaceChildren(h('div', { class: 'sec' }, h('h2', {}, 'Relatórios'),
+      h('div', { class: 'row relbar' }, btns, h('span', { class: 'mut' }, 'ou'), de, h('span', { class: 'mut' }, 'até'), ate, h('button', { class: 'btn sm', type: 'button', id: 'rel-ok', onclick: () => { if (!de.value || !ate.value) return toast('Escolha as duas datas.'); carregar(''); } }, 'Ver')), out));
+    btns[1].click();
+  }
+
   /* ----- painel: editor de cardápio (editor.html existente, só administradores) ----- */
   async function pEditor(box, call, info, sess) {
     try { await call('admin_usuarios'); } catch (e) { // confirma no servidor que a sessão é de administrador
@@ -246,7 +328,13 @@
     html = html.replace('<head>', () => '<head><script>window.MA_HOST=' + JSON.stringify(host).replace(/</g, '\\u003c') + '<\/script>');
     const ifr = h('iframe', { title: 'Editor de cardápio' });
     ifr.srcdoc = html; box.replaceChildren(ifr);
-    current = { stop() { // grava o que estiver pendente no editor antes de removê-lo (no máximo 3 s de espera)
+    const sujo = () => { try { return !!ifr.contentWindow.GC.hostDirty(); } catch (e) { return false; } };
+    guardaEditor = e => { // alterações não publicadas: pergunta antes de sair
+      const a = e.target.closest && e.target.closest('a,button'); if (!a || a.getAttribute('href') === '#/editor' || !sujo()) return;
+      if (!confirm('Você tem alterações no cardápio que ainda NÃO foram publicadas.\n\nElas ficam salvas neste navegador, mas os clientes só verão depois de clicar em "Salvar e publicar".\n\nSair mesmo assim?')) { e.preventDefault(); e.stopPropagation(); }
+    };
+    window.onbeforeunload = () => sujo() ? 'Há alterações não publicadas.' : undefined;
+    current = { stop() { window.onbeforeunload = null; guardaEditor = () => {}; // grava o que estiver pendente no editor antes de removê-lo (no máximo 3 s de espera)
       const w = ifr.contentWindow, save = w && w.GC && w.GC.saveNow ? Promise.resolve(w.GC.saveNow()).catch(() => {}) : Promise.resolve();
       return Promise.race([save, new Promise(r => setTimeout(r, 3000))]);
     } };
@@ -277,7 +365,7 @@
     function loginP(msg) {
       const em = h('input', { id: 'email', type: 'email', autocomplete: 'username', required: true }), pw = h('input', { id: 'senha', type: 'password', autocomplete: 'current-password', required: true });
       const err = h('div', { class: 'err' }, msg || ''), go = h('button', { class: 'btn', type: 'submit' }, 'Entrar');
-      root.replaceChildren(h('div', { class: 'center' }, h('form', { class: 'card', onsubmit: async e => {
+      root.replaceChildren(authWrap(h('form', { class: 'card', onsubmit: async e => {
         e.preventDefault(); go.disabled = true; err.textContent = '';
         try { P = await authReq('password', { email: em.value.trim(), password: pw.value }); lsSet(KEY, P); inicio(); } catch (x) { err.textContent = /Invalid login/i.test(x.message) ? 'E-mail ou senha incorretos' : x.message; go.disabled = false; }
       } }, brandEl(), h('p', {}, 'Administração da plataforma'), field('E-mail', em), field('Senha', pw), err, go)));
@@ -306,7 +394,7 @@
             try { await call('plataforma_salvar_restaurante', { p_id: r.id, p_nome: r.nome, p_slug: r.slug, p_ativo: !r.ativo, p_motivo: motivo }); toast(r.ativo ? 'Bloqueado' : 'Desbloqueado'); painel(); } catch (e) { toast(e.message); }
           } }, r.ativo ? 'Bloquear' : 'Desbloquear'))));
       root.replaceChildren(
-        h('div', { class: 'top' }, brandEl(), h('span', { class: 'sp' }), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair')),
+        h('div', { class: 'top' }, topBrand(), h('b', { class: 'tag-adm' }, 'Administração'), h('span', { class: 'sp' }), verEl(), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair')),
         h('div', { class: 'main' },
           h('div', { class: 'sec' }, h('h2', {}, 'Novo restaurante'),
             h('div', { class: 'grid3' }, field('Nome', nome), field('Endereço (slug)', slug), field('Login do responsável', al), field('Nome do responsável', an), field('Senha inicial', as)),
@@ -316,6 +404,7 @@
             } }, 'Criar restaurante'))),
           h('div', { class: 'sec' }, h('h2', {}, 'Restaurantes (' + rs.length + ')'),
             rs.length ? h('div', { class: 'tscroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Status', 'Estrutura', 'Agora', 'Uso', 'Cardápio publicado', ''].map(x => h('th', {}, x)))), h('tbody', {}, rs.map(linha)))) : h('p', { class: 'mut' }, 'Nenhum restaurante ainda.'))));
+      root.append(footEl());
     }
     function editar(r) {
       const nome = h('input', { id: 'e-nome', value: r.nome }), slug = h('input', { id: 'e-slug', value: r.slug });

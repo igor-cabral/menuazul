@@ -78,6 +78,16 @@ create table if not exists cardapio (
   primary key (restaurante_id, id)
 );
 
+-- cada vez que um item é marcado/desmarcado como esgotado (alimenta o relatório "itens que mais esgotam")
+create table if not exists esgotado_log (
+  id bigserial primary key,
+  restaurante_id uuid not null references restaurantes(id) on delete cascade,
+  item_id text not null,
+  esgotado boolean not null,
+  em timestamptz not null default now()
+);
+create index if not exists esgotado_log_rest on esgotado_log (restaurante_id, em);
+
 create table if not exists comandas (
   id uuid primary key default gen_random_uuid(),
   mesa_id uuid not null references mesas(id),
@@ -111,6 +121,9 @@ create table if not exists pedidos (
 );
 create index if not exists pedidos_comanda on pedidos (comanda_id);
 create index if not exists pedidos_status on pedidos (status) where status in ('novo','preparando','pronto');
+-- horários do preparo (alimentam o relatório de tempo médio; pedidos antigos ficam sem esses dados)
+alter table pedidos add column if not exists preparando_em timestamptz;
+alter table pedidos add column if not exists pronto_em timestamptz;
 
 create table if not exists pedido_itens (
   id uuid primary key default gen_random_uuid(),
@@ -491,7 +504,9 @@ declare s staff_sessoes;
 begin
   s := _sessao(p_token, array['cozinha','caixa','admin']);
   if p_status not in ('novo','preparando','pronto','entregue','cancelado') then raise exception 'Status inválido'; end if;
-  update pedidos p set status = p_status, atualizado_em = now()
+  update pedidos p set status = p_status, atualizado_em = now(),
+         preparando_em = case when p_status = 'novo' then null when p_status = 'preparando' and p.preparando_em is null then now() else p.preparando_em end,
+         pronto_em = case when p_status = 'pronto' then now() when p_status in ('novo', 'preparando') then null else p.pronto_em end
    where p.id = p_pedido and exists (
      select 1 from comandas c join mesas m on m.id = c.mesa_id
       where c.id = p.comanda_id and c.status = 'aberta' and m.restaurante_id = s.restaurante_id);
@@ -749,11 +764,15 @@ end $$;
 
 create or replace function admin_item_esgotado(p_token uuid, p_item text, p_esgotado boolean) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare s staff_sessoes;
+declare s staff_sessoes; v_old boolean; v_new boolean := coalesce(p_esgotado, false);
 begin
   s := _sessao(p_token, array['admin','caixa']);
-  update cardapio set esgotado = coalesce(p_esgotado, false) where restaurante_id = s.restaurante_id and id = p_item;
+  select esgotado into v_old from cardapio where restaurante_id = s.restaurante_id and id = p_item;
   if not found then raise exception 'Item não encontrado'; end if;
+  update cardapio set esgotado = v_new where restaurante_id = s.restaurante_id and id = p_item;
+  if v_old is distinct from v_new then
+    insert into esgotado_log (restaurante_id, item_id, esgotado) values (s.restaurante_id, p_item, v_new);
+  end if;
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -872,6 +891,78 @@ begin
   return jsonb_build_object('itens', v_n);
 end $$;
 
+-- ---------- relatórios do dono (só admin) ----------
+-- Números de um período (datas no fuso do restaurante): faturamento = pagamentos recebidos; contas = comandas encerradas.
+create or replace function _rel_resumo(p_rest uuid, p_fuso text, p_de date, p_ate date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare v_fat numeric; v_contas int; v_perm numeric; v_ped int; v_itens int; v_prep numeric;
+begin
+  select coalesce(sum(g.valor), 0) into v_fat
+    from pagamentos g join comandas c on c.id = g.comanda_id join mesas m on m.id = c.mesa_id
+   where m.restaurante_id = p_rest and (g.em at time zone p_fuso)::date between p_de and p_ate;
+  select count(*), avg(extract(epoch from (c.encerrada_em - c.aberta_em)) / 60) into v_contas, v_perm
+    from comandas c join mesas m on m.id = c.mesa_id
+   where m.restaurante_id = p_rest and c.status = 'encerrada' and (c.encerrada_em at time zone p_fuso)::date between p_de and p_ate;
+  select count(*) into v_ped
+    from pedidos p join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+   where m.restaurante_id = p_rest and p.status <> 'cancelado' and (p.criado_em at time zone p_fuso)::date between p_de and p_ate;
+  select coalesce(sum(i.qtd), 0) into v_itens
+    from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+   where m.restaurante_id = p_rest and p.status <> 'cancelado' and (p.criado_em at time zone p_fuso)::date between p_de and p_ate;
+  select avg(extract(epoch from (p.pronto_em - p.criado_em)) / 60) into v_prep
+    from pedidos p join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+   where m.restaurante_id = p_rest and p.status <> 'cancelado' and p.pronto_em is not null and (p.criado_em at time zone p_fuso)::date between p_de and p_ate;
+  return jsonb_build_object(
+    'faturamento', v_fat, 'contas', v_contas, 'pedidos', v_ped, 'itens', v_itens,
+    'ticket_medio', case when v_contas > 0 then round(v_fat / v_contas, 2) else null end,
+    'permanencia_min', round(v_perm, 0), 'preparo_min', round(v_prep, 1),
+    'por_metodo', (select coalesce(jsonb_object_agg(q.metodo, q.t), '{}'::jsonb) from (
+        select g.metodo, sum(g.valor) as t
+          from pagamentos g join comandas c on c.id = g.comanda_id join mesas m on m.id = c.mesa_id
+         where m.restaurante_id = p_rest and (g.em at time zone p_fuso)::date between p_de and p_ate group by g.metodo) q));
+end $$;
+
+create or replace function admin_relatorio(p_token uuid, p_de date, p_ate date) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; v_fuso text; v_de date; v_ate date; v_dias int; v_pde date; v_pate date; v_mesas int;
+begin
+  s := _sessao(p_token, array['admin']);
+  select fuso into v_fuso from restaurantes where id = s.restaurante_id;
+  v_ate := coalesce(p_ate, (now() at time zone v_fuso)::date);
+  v_de := coalesce(p_de, v_ate);
+  if v_de > v_ate then raise exception 'Período inválido'; end if;
+  if v_ate - v_de > 366 then raise exception 'Período muito longo (máximo 1 ano)'; end if;
+  v_dias := v_ate - v_de + 1; v_pate := v_de - 1; v_pde := v_pate - (v_dias - 1);
+  select count(*) into v_mesas from mesas where restaurante_id = s.restaurante_id and ativa;
+  return jsonb_build_object(
+    'de', v_de, 'ate', v_ate, 'dias', v_dias, 'anterior_de', v_pde, 'anterior_ate', v_pate, 'mesas_ativas', v_mesas,
+    'atual', _rel_resumo(s.restaurante_id, v_fuso, v_de, v_ate),
+    'anterior', _rel_resumo(s.restaurante_id, v_fuso, v_pde, v_pate),
+    'mais_vendidos', (select coalesce(jsonb_agg(r), '[]'::jsonb) from (
+        select i.nome, sum(i.qtd)::int as qtd, sum(i.qtd * i.preco_unit) as receita
+          from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+         where m.restaurante_id = s.restaurante_id and p.status <> 'cancelado' and (p.criado_em at time zone v_fuso)::date between v_de and v_ate
+         group by i.item_id, i.nome order by 2 desc, 1 limit 10) r),
+    'menos_vendidos', (select coalesce(jsonb_agg(r), '[]'::jsonb) from (
+        select x.nome, coalesce(v.qtd, 0)::int as qtd
+          from cardapio x left join (
+            select i.item_id, sum(i.qtd) as qtd
+              from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+             where m.restaurante_id = s.restaurante_id and p.status <> 'cancelado' and (p.criado_em at time zone v_fuso)::date between v_de and v_ate
+             group by i.item_id) v on v.item_id = x.id
+         where x.restaurante_id = s.restaurante_id order by 2, 1 limit 10) r),
+    'por_hora', (select coalesce(jsonb_agg(coalesce(q.n, 0) order by h.h), '[]'::jsonb) from generate_series(0, 23) as h(h) left join (
+        select extract(hour from (p.criado_em at time zone v_fuso))::int as hr, count(*) as n
+          from pedidos p join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+         where m.restaurante_id = s.restaurante_id and p.status <> 'cancelado' and (p.criado_em at time zone v_fuso)::date between v_de and v_ate
+         group by 1) q on q.hr = h.h),
+    'esgotados', (select coalesce(jsonb_agg(r), '[]'::jsonb) from (
+        select coalesce(ca.nome, l.item_id) as nome, count(*)::int as vezes
+          from esgotado_log l left join cardapio ca on ca.restaurante_id = l.restaurante_id and ca.id = l.item_id
+         where l.restaurante_id = s.restaurante_id and l.esgotado and (l.em at time zone v_fuso)::date between v_de and v_ate
+         group by 1 order by 2 desc, 1 limit 10) r));
+end $$;
+
 -- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
 create or replace function _foto_ok(p_nome text) returns boolean
 language sql stable security definer set search_path = public, pg_temp as $$
@@ -887,6 +978,7 @@ alter table staff_sessoes enable row level security;
 alter table login_falhas enable row level security;
 alter table mesas enable row level security;
 alter table cardapio enable row level security;
+alter table esgotado_log enable row level security;
 alter table comandas enable row level security;
 alter table clientes enable row level security;
 alter table pedidos enable row level security;
@@ -908,7 +1000,7 @@ grant execute on function
   admin_mesas(uuid), admin_criar_mesas(uuid, int), admin_salvar_mesa(uuid, uuid, text, boolean), admin_apagar_mesa(uuid, uuid),
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
-  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), _foto_ok(text)
+  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), _foto_ok(text)
 to anon, authenticated;
 
 grant execute on function
