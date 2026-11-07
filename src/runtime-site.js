@@ -458,6 +458,12 @@ function siteRuntime() {
               api('publico_pedir_conta', { p_cliente_token: S.sess.token }).then(function () { toast('Conta solicitada!'); refresh(); }, function (e) { toast(e.message); });
             }
           }));
+          if (est.comanda.chamado) box.appendChild(el('div', { class: 'warn ok', text: '✓ Garçom chamado. Ele já vai até a sua mesa.' }));
+          else box.appendChild(el('button', {
+            class: 'send alt', id: 'call-waiter', type: 'button', text: '🔔 Chamar o garçom', onclick: function () {
+              api('publico_chamar_garcom', { p_cliente_token: S.sess.token }).then(function () { toast('Garçom chamado!'); refresh(); }, function (e) { toast(e.message); });
+            }
+          }));
         };
         S.render();
       }, function () { S.render = null; });

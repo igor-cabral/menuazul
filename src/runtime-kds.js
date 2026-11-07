@@ -70,6 +70,34 @@ function kdsRuntime(app, CFG) {
   var PREV = { preparando: ['novo', '↩ Voltar'], pronto: ['preparando', '↩ Voltar'] };
 
   function audio() { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) {} }
+  /* ---------- impressão do pedido (bobina 80 mm) ---------- */
+  // Ligada, imprime cada pedido NOVO que chega (uma vez só). Para imprimir sem a janela de confirmação, abra o Chrome/Edge do computador da cozinha
+  // com o atalho "--kiosk-printing" e deixe a impressora da cozinha como padrão.
+  var printOn = ls('gc-kds-print') === '1', printed = [], printQ = [], printing = false, prnEl = null;
+  try { printed = JSON.parse(ls('gc-kds-printed') || '[]'); } catch (e) {}
+  function markPrinted(ids) { ids.forEach(function (i) { if (printed.indexOf(i) < 0) printed.push(i); }); printed = printed.slice(-400); ls('gc-kds-printed', JSON.stringify(printed)); }
+  function esc(x) { return String(x == null ? '' : x).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function ticketHtml(p) {
+    var t = new Date(p.criado_em), hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':' + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
+    var h = '<div class="c big">MESA ' + esc(p.mesa) + '</div><div class="c">Pedido #' + p.numero + ' · ' + hm + '</div>' + (p.cliente ? '<div class="c">' + esc(p.cliente) + '</div>' : '') + '<hr>';
+    p.itens.forEach(function (i) {
+      h += '<div class="it"><b>' + i.qtd + '×</b> ' + esc(i.nome + (i.variante ? ' · ' + i.variante : '')) + '</div>';
+      (i.adicionais || []).forEach(function (a) { h += '<div class="ad">+ ' + esc(a.l) + '</div>'; });
+      if (i.obs) h += '<div class="ad">!! ' + esc(i.obs) + '</div>';
+    });
+    if (p.obs) h += '<hr><div>OBS: ' + esc(p.obs) + '</div>';
+    return '<html><head><meta charset="utf-8"><style>@page{size:80mm auto;margin:2mm}body{font:bold 15px/1.3 monospace;width:72mm;margin:0;color:#000}.c{text-align:center}.big{font-size:28px}.it{font-size:17px;margin-top:6px}.ad{padding-left:16px;font-size:14px}hr{border:0;border-top:2px dashed #000;margin:8px 0}.f{text-align:center;font-size:11px;margin-top:8px}</style></head><body>' + h + '<hr><div class="f">' + esc(CFG.nome) + '</div></body></html>';
+  }
+  function drainPrint() {
+    if (printing || !printQ.length) return;
+    printing = true;
+    var html = printQ.shift(), f = d.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0'; d.body.appendChild(f);
+    f.contentDocument.open(); f.contentDocument.write(html); f.contentDocument.close();
+    setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) {} setTimeout(function () { f.remove(); printing = false; drainPrint(); }, 1800); }, 150);
+  }
+  function printTicket(p) { printQ.push(ticketHtml(p)); drainPrint(); }
+  function prnLabel() { return printOn ? '🖨 Impressão: ligada' : '🖨 Impressão: desligada'; }
+
   // lembrete sonoro a cada 30 s enquanto houver pedido novo parado, e aviso se o som estiver bloqueado pelo navegador
   var sndEl = null;
   function sndLabel() { return !sound ? '🔕 Ativar som' : (ctx && ctx.state === 'running' ? '🔔 Som ligado' : '🔇 Toque para liberar o som'); }
@@ -108,6 +136,7 @@ function kdsRuntime(app, CFG) {
       el('div', { class: 'acts' }, [
         pv ? el('button', { class: 'btn sec', type: 'button', text: pv[1], onclick: function () { setStatus(p, pv[0]); } }) : null,
         el('button', { class: 'btn', type: 'button', text: nx[1], onclick: function () { setStatus(p, nx[0]); } })]),
+      el('button', { class: 'x', type: 'button', 'data-print': p.numero, text: '🖨 Imprimir', onclick: function () { printTicket(p); } }),
       el('button', { class: 'x', type: 'button', text: 'Cancelar pedido', onclick: function () { if (confirm('Cancelar o pedido #' + p.numero + ' da mesa ' + p.mesa + '?')) setStatus(p, 'cancelado'); } })
     ]);
   }
@@ -117,7 +146,9 @@ function kdsRuntime(app, CFG) {
     var snd = sndEl = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sndLabel(), onclick: function () {
       sound = !sound; ls('gc-kds-sound', sound ? '1' : '0'); if (sound) { audio(); beep(); } snd.textContent = sndLabel();
     } });
-    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '👨‍🍳 Cozinha · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
+    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '👨‍🍳 Cozinha · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), prnEl = el('button', { class: 'btn sec sm', type: 'button', id: 'prn', title: 'Imprime cada pedido novo (bobina 80 mm). Para imprimir sem a janela de confirmação, abra o navegador com --kiosk-printing.', text: prnLabel(), onclick: function () {
+      printOn = !printOn; ls('gc-kds-print', printOn ? '1' : '0'); if (printOn) markPrinted(S.pedidos.map(function (x) { return x.id; })); prnEl.textContent = prnLabel();
+    } }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
     var cols = COLS.map(function (c) {
       var list = S.pedidos.filter(function (p) { return p.status === c[0]; });
       return el('section', { class: 'col', style: '--c:' + c[2], 'data-col': c[0] }, [
@@ -151,6 +182,7 @@ function kdsRuntime(app, CFG) {
       S.offset = new Date(r.agora).getTime() - Date.now();
       var wasOff = !S.online; S.online = true;
       var ids = {}; r.pedidos.forEach(function (p) { ids[p.id] = 1; });
+      if (printOn) { var np = r.pedidos.filter(function (p) { return p.status === 'novo' && printed.indexOf(p.id) < 0; }); if (np.length) { markPrinted(np.map(function (p) { return p.id; })); np.forEach(printTicket); } }
       if (S.known) {
         var fresh = r.pedidos.filter(function (p) { return p.status === 'novo' && !S.known[p.id]; });
         if (fresh.length) { fresh.forEach(function (p) { S.fresh[p.id] = Date.now() + 6000; }); beep(); }

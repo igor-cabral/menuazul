@@ -168,6 +168,53 @@ console.log('6b) relatórios do dono');
   ok((await be.query('select count(*)::int c from pedidos where pronto_em is not null')).rows[0].c >= 1, 'pedido guarda o horário de pronto');
 }
 
+console.log('6c) garçom');
+{
+  await good('admin_usuario_salvar', { p_token: tokA, p_id: null, p_login: 'gar1', p_nome: 'Ana Souza', p_papel: 'garcom', p_senha: 'garcom123', p_ativo: true });
+  const gar = (await login('pizza-boa', 'gar1', 'garcom123')).token, mesaG = mesasA[1];
+  ok(!!gar && (await login('pizza-boa', 'gar1', 'garcom123')).papel === 'garcom', 'garçom entra com papel próprio');
+  for (const [nome, t] of [['caixa', cxA], ['cozinha', kdA]]) ok(/sessao_invalida/.test(await bad('garcom_mesas', { p_token: t })), nome + ' não usa a tela do garçom');
+  ok(/sessao_invalida/.test(await bad('caixa_mesas', { p_token: gar })) && /sessao_invalida/.test(await bad('kds_listar', { p_token: gar })), 'garçom não acessa caixa nem cozinha');
+  ok(/sessao_invalida/.test(await bad('admin_relatorio', { p_token: gar, p_de: null, p_ate: null })) && /sessao_invalida/.test(await bad('admin_mesas', { p_token: gar })), 'garçom não é admin');
+  const ms = await good('garcom_mesas', { p_token: gar });
+  ok(ms.mesas.length === 2 && ms.mesas.every(m => m.id !== mesasB[0].id), 'garçom vê só as mesas do seu restaurante');
+  const its = await good('garcom_itens', { p_token: gar });
+  ok(its.some(i => i.id === 'x1') && !its.some(i => i.id === 'b1'), 'garçom vê o cardápio do seu restaurante');
+  ok(/não encontrada/.test(await bad('garcom_pedir', { p_token: gar, p_mesa: mesasB[0].id, p_itens: [{ id: 'x1', q: 1 }] })), 'garçom não lança pedido em mesa de outro restaurante');
+  ok(/indispon/.test(await bad('garcom_pedir', { p_token: gar, p_mesa: mesaG.id, p_itens: [{ id: 'nao-existe', q: 1 }] })), 'item inexistente recusado');
+  ok(/vazio/.test(await bad('garcom_pedir', { p_token: gar, p_mesa: mesaG.id, p_itens: [] })), 'pedido vazio recusado');
+  ok((await be.query('select count(*)::int c from comandas where mesa_id = $1 and status = $2', [mesaG.id, 'aberta'])).rows[0].c === 0, 'pedido recusado não deixa conta aberta');
+  const ped = await good('garcom_pedir', { p_token: gar, p_mesa: mesaG.id, p_itens: [{ id: 'x1', q: 2, a: ['Bacon'] }], p_obs: 'sem cebola' });
+  ok(!!ped.pedido_id && !!ped.comanda_id && ped.numero > 0, 'garçom lança pedido e a conta da mesa abre');
+  const kd = await good('kds_listar', { p_token: kdA }), pk = kd.pedidos.find(p => p.id === ped.pedido_id);
+  ok(pk && pk.cliente === 'Garçom Ana' && pk.itens[0].qtd === 2 && Number(pk.itens[0].adicionais.length) === 1 && pk.obs === 'sem cebola', 'pedido do garçom chega na cozinha com o nome dele e os adicionais');
+  ok((await be.query('select preco_unit from pedido_itens where pedido_id = $1', [ped.pedido_id])).rows[0].preco_unit == 25, 'preço calculado pelo servidor (20 + bacon 5)');
+  const ped2 = await good('garcom_pedir', { p_token: gar, p_mesa: mesaG.id, p_itens: [{ id: 'x1', q: 1 }] });
+  ok(ped2.comanda_id === ped.comanda_id && (await be.query('select count(*)::int c from clientes where comanda_id = $1', [ped.comanda_id])).rows[0].c === 1, 'segundo pedido usa a mesma conta e o mesmo "cliente" Garçom');
+  ok(/Não encontrado|não encontrado/.test(await bad('garcom_entregar', { p_token: gar, p_pedido: ped.pedido_id })), 'não entrega pedido que ainda não está pronto');
+  await good('pedido_status', { p_token: kdA, p_pedido: ped.pedido_id, p_status: 'pronto' });
+  const m2 = (await good('garcom_mesas', { p_token: gar })).mesas.find(m => m.id === mesaG.id);
+  ok(m2.comanda.prontos === 1 && m2.comanda.pendentes === 1, 'garçom vê 1 pronto para entregar e 1 na cozinha');
+  const det = await good('garcom_mesa', { p_token: gar, p_mesa: mesaG.id });
+  ok(det.pedidos.filter(p => p.status === 'pronto').length === 1 && det.mesa.numero === mesaG.numero, 'detalhe da mesa lista os pedidos prontos');
+  ok(/não encontrad/i.test(await bad('garcom_entregar', { p_token: tokB, p_pedido: ped.pedido_id })), 'garçom/admin de outro restaurante não entrega o pedido');
+  await good('garcom_entregar', { p_token: gar, p_pedido: ped.pedido_id });
+  ok((await be.query('select status from pedidos where id = $1', [ped.pedido_id])).rows[0].status === 'entregue', 'entrega marca o pedido como entregue');
+  ok(/não encontrad|já entregue/i.test(await bad('garcom_entregar', { p_token: gar, p_pedido: ped.pedido_id })), 'não entrega duas vezes');
+  // cliente chama o garçom
+  await good('admin_config_set', { p_token: tokA, p_taxa: 10, p_auto: true });
+  const cli = await good('publico_entrar', { p_slug: 'pizza-boa', p_codigo: mesaG.codigo, p_nome: 'Bia' });
+  ok((await good('publico_estado', { p_cliente_token: cli.cliente_token })).comanda.chamado === false, 'cliente ainda não chamou');
+  await good('publico_chamar_garcom', { p_cliente_token: cli.cliente_token });
+  const m3 = (await good('garcom_mesas', { p_token: gar })).mesas.find(m => m.id === mesaG.id);
+  ok(m3.comanda.chamado_por === 'Bia' && !!m3.comanda.chamado_em, 'garçom vê quem chamou');
+  ok((await good('publico_estado', { p_cliente_token: cli.cliente_token })).comanda.chamado === true, 'cliente vê que o garçom foi chamado');
+  await good('garcom_atender', { p_token: gar, p_comanda: ped.comanda_id });
+  ok((await good('garcom_mesas', { p_token: gar })).mesas.find(m => m.id === mesaG.id).comanda.chamado_em === null, 'atender limpa o chamado');
+  ok(/não encontrad/i.test(await bad('garcom_atender', { p_token: tokB, p_comanda: ped.comanda_id })), 'outro restaurante não atende o chamado');
+  await good('admin_config_set', { p_token: tokA, p_taxa: 10, p_auto: false });
+}
+
 console.log('7) bloqueio de restaurante');
 await good('plataforma_salvar_restaurante', { p_id: B, p_nome: 'Burger', p_slug: 'burger', p_ativo: false, p_motivo: 'Inadimplente' }, dono);
 ok((await be.query('select count(*)::int n from staff_sessoes where restaurante_id = $1', [B])).rows[0].n === 0, 'sessões do restaurante bloqueado foram apagadas');

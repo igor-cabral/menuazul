@@ -98,7 +98,9 @@
 
   /* ---------- cardápio (mesa ou público) ---------- */
   async function menuPage(slug, codigo) {
-    useCss(null); root.replaceChildren(h('div', { class: 'center' }, h('div', { class: 'spin' }), h('p', {}, 'Carregando cardápio…')));
+    useCss(null); document.title = BRAND.name; const t0 = Date.now();
+    // abertura: logo + "Uma experiência Menu Azul" + assinatura do desenvolvedor por 2 s (o cardápio carrega por baixo)
+    root.replaceChildren(h('div', { class: 'center splash' }, h('div', { class: 'stack wide' }, h('span', { class: 'sp-kick' }, 'Uma experiência'), h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }), h('div', { class: 'sp-bar' })), creditEl()));
     let r;
     try { r = await rpc('publico_cardapio', { p_slug: slug }); } catch (e) {
       if (/restaurante_inexistente/.test(e.message)) return msgPage('Restaurante não encontrado', 'Confira o endereço ou o QR Code.');
@@ -109,6 +111,7 @@
     const model = r.modelo, esg = new Set(r.esgotados || []);
     (model.categories || []).forEach(c => (c.items || []).forEach(i => { if (esg.has(i.id)) i.soldOut = true; }));
     if (codigo) { model.options = Object.assign({}, model.options, { cartEnabled: true }); }
+    const resto = 2000 - (Date.now() - t0); if (resto > 0) await new Promise(ok => setTimeout(ok, resto));
     const html = MenuGen.buildSite(model, codigo ? { mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : {});
     document.open(); document.write(html); document.close();
   }
@@ -156,7 +159,7 @@
     const call = (n, a) => rpc(n, Object.assign({ p_token: sess.token }, a || {})).catch(e => { if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) expirou(); throw e; });
     const kcfg = { api: rpc, token: sess.token, nome: info.nome, expired: expirou, logout: () => sair() };
     const admin = sess.papel === 'admin';
-    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel];
+    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'garcom', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel];
 
     let seq = 0;
     async function show() {
@@ -166,15 +169,15 @@
       let t = location.hash.replace('#/', '');
       if (!TELAS.includes(t)) t = admin ? 'mesas' : sess.papel;
       document.title = info.nome;
-      if (t === 'caixa' || t === 'cozinha') {
-        useCss(t === 'caixa' ? CAIXA_CSS : KDS_CSS);
+      if (t === 'caixa' || t === 'cozinha' || t === 'garcom') {
+        useCss(t === 'caixa' ? CAIXA_CSS : t === 'garcom' ? GARCOM_CSS : KDS_CSS);
         root.replaceChildren(h('div', { id: 'app' }));
-        current = { stop: (t === 'caixa' ? caixaRuntime : kdsRuntime)(document.getElementById('app'), kcfg) };
+        current = { stop: (t === 'caixa' ? caixaRuntime : t === 'garcom' ? garcomRuntime : kdsRuntime)(document.getElementById('app'), kcfg) };
         if (admin) document.body.append(h('a', { class: 'backpill', href: '#/mesas' }, '← Painel'));
         return;
       }
       useCss(null);
-      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['relatorios', 'Relatórios'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
+      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['relatorios', 'Relatórios'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
         .map(([k, l]) => h('a', { href: '#/' + k, class: k === t ? 'on' : '' }, l)));
       const body = h('div', { class: t === 'editor' ? 'edwrap' : 'main' });
       const topEl = h('div', { class: 'top' }, h('img', { class: 'sym', src: BRAND.symbol, alt: BRAND.name }), h('b', {}, info.nome), nav, h('span', { class: 'sp' }), admin && verEl(), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair'));
@@ -217,11 +220,11 @@
     const draw = async () => {
       let us; try { us = await listFn(); } catch (e) { return toast(e.message); }
       const login = h('input', { id: 'u-login', placeholder: 'login (minúsculas)', autocapitalize: 'none' }), nome = h('input', { id: 'u-nome', placeholder: 'Nome' }), senha = h('input', { id: 'u-senha', type: 'text', placeholder: 'Senha (6+)' });
-      const papel = h('select', { id: 'u-papel' }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v }, l)));
+      const papel = h('select', { id: 'u-papel' }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v }, l)));
       const save = async (u, patch, ok) => { try { await saveFn(Object.assign({ p_id: u.id, p_login: '', p_nome: u.nome, p_papel: u.papel, p_senha: '', p_ativo: u.ativo }, patch)); if (ok) toast(ok); draw(); } catch (e) { toast(e.message); draw(); } };
       box.replaceChildren(h('h2', {}, 'Equipe'),
         ...us.map(u => {
-          const pp = h('select', { onchange: () => save(u, { p_papel: pp.value }) }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: v === u.papel }, l)));
+          const pp = h('select', { onchange: () => save(u, { p_papel: pp.value }) }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: v === u.papel }, l)));
           const at = h('input', { type: 'checkbox', checked: u.ativo, onchange: () => save(u, { p_ativo: at.checked }) });
           return h('div', { class: 'line', 'data-login': u.login }, h('span', { class: 'g' }, h('b', {}, u.nome), ' ', h('span', { class: 'mut' }, '@' + u.login)), pp, h('label', { class: 'row' }, at, 'ativo'),
             h('button', { class: 'btn sec sm', onclick: () => { const s = prompt('Nova senha para ' + u.nome + ' (6 a 72 caracteres):'); if (s) save(u, { p_senha: s }, 'Senha alterada'); } }, 'Nova senha'));

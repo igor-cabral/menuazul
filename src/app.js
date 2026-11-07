@@ -542,6 +542,7 @@
         checkField('Botão flutuante "Fazer pedido"', 'options.orderButton', 'Abre o WhatsApp direto.'),
         checkField('Botão "Pedir" em cada produto', 'options.itemOrderButton', 'Abre o WhatsApp com o nome do produto.')),
       section('Rodapé'),
+      checkField('Faixa "Uma experiência Menu Azul" no fim do cardápio', 'options.platformBrand', 'Mostra a marca Menu Azul e "Desenvolvido por igor cabral.". Ligada por padrão.'),
       textField('Texto do rodapé', 'options.footerText', { multiline: true, rows: 2 }),
       h('div', { class: 'two' }, textField('Crédito (texto)', 'options.creditText', { placeholder: 'Site por …' }), textField('Crédito (link)', 'options.creditUrl', { placeholder: 'https://…' })),
       h('div', {}, h('button', { class: 'btn sm', onclick: () => {

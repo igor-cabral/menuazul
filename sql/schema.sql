@@ -34,7 +34,7 @@ create table if not exists usuarios (
   restaurante_id uuid not null references restaurantes(id) on delete cascade,
   login text not null,
   nome text not null,
-  papel text not null check (papel in ('admin','caixa','cozinha')),
+  papel text not null check (papel in ('admin','caixa','cozinha','garcom')),
   senha_hash text not null,
   ativo boolean not null default true,
   criado_em timestamptz not null default now(),
@@ -99,6 +99,12 @@ create table if not exists comandas (
   conta_pedida boolean not null default false
 );
 create unique index if not exists comanda_aberta_unica on comandas (mesa_id) where status = 'aberta';
+-- cliente chamou o garçom (fica até o garçom atender)
+alter table comandas add column if not exists chamado_em timestamptz;
+alter table comandas add column if not exists chamado_por text;
+-- bancos criados antes do papel "garcom": troca a regra do papel
+alter table usuarios drop constraint if exists usuarios_papel_check;
+alter table usuarios add constraint usuarios_papel_check check (papel in ('admin','caixa','cozinha','garcom'));
 
 create table if not exists clientes (
   id uuid primary key default gen_random_uuid(),
@@ -260,7 +266,7 @@ create or replace function _usuario_salvar(p_rest uuid, p_id uuid, p_login text,
 language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare v_login text := lower(trim(coalesce(p_login, ''))); v_nome text := left(trim(coalesce(p_nome, '')), 60); u usuarios;
 begin
-  if p_papel not in ('admin','caixa','cozinha') then raise exception 'Papel inválido'; end if;
+  if p_papel not in ('admin','caixa','cozinha','garcom') then raise exception 'Papel inválido'; end if;
   if v_nome = '' then raise exception 'Informe o nome'; end if;
   if p_senha is not null and p_senha <> '' and (length(p_senha) < 6 or length(p_senha) > 72) then
     raise exception 'A senha deve ter de 6 a 72 caracteres';
@@ -363,7 +369,7 @@ begin
   end if;
   return jsonb_build_object(
     'mesa', jsonb_build_object('numero', m.numero),
-    'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'conta_pedida', c.conta_pedida),
+    'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'conta_pedida', c.conta_pedida, 'chamado', c.chamado_em is not null),
     'eu', jsonb_build_object('id', cl.id, 'nome', cl.nome),
     'clientes', _clientes_json(c.id), 'pedidos', _pedidos_json(c.id), 'totais', _totais(c.id));
 end $$;
@@ -891,6 +897,155 @@ begin
   return jsonb_build_object('itens', v_n);
 end $$;
 
+-- ---------- garçom: atende as mesas (pedidos, entregas e chamados) ----------
+-- cria um pedido numa comanda aberta (mesma regra de preço/variante/adicional do pedido feito pelo cliente)
+create or replace function _criar_pedido(p_comanda uuid, p_cliente uuid, p_itens jsonb, p_obs text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare c comandas; v_rest uuid; v_ped uuid; v_num int;
+  v_it jsonb; v_row cardapio; v_pre numeric; v_var text; v_q int; v_adlist jsonb; v_lbl text; v_found jsonb;
+begin
+  select * into c from comandas where id = p_comanda;
+  if c.status <> 'aberta' then raise exception 'conta_encerrada'; end if;
+  select m.restaurante_id into v_rest from mesas m where m.id = c.mesa_id;
+  if p_itens is null or jsonb_typeof(p_itens) <> 'array' or jsonb_array_length(p_itens) = 0 then raise exception 'Pedido vazio'; end if;
+  if jsonb_array_length(p_itens) > 40 then raise exception 'Pedido muito grande'; end if;
+
+  update restaurantes set seq_pedido = seq_pedido + 1 where id = v_rest returning seq_pedido into v_num;
+  insert into pedidos (numero, comanda_id, cliente_id, obs)
+  values (v_num, c.id, p_cliente, nullif(left(trim(coalesce(p_obs, '')), 200), '')) returning id into v_ped;
+
+  for v_it in select * from jsonb_array_elements(p_itens) loop
+    v_q := coalesce(nullif(v_it->>'q', '')::int, 1);
+    if v_q < 1 or v_q > 50 then raise exception 'Quantidade inválida'; end if;
+    select * into v_row from cardapio where restaurante_id = v_rest and id = v_it->>'id';
+    if not found then raise exception 'Item indisponível. Atualize a página e tente de novo.'; end if;
+    if v_row.esgotado then raise exception 'Esgotado: %', v_row.nome; end if;
+
+    v_var := coalesce(v_it->>'v', '');
+    if jsonb_array_length(v_row.variantes) > 0 then
+      v_pre := null;
+      select (x->>'p')::numeric, x->>'l' into v_pre, v_var
+        from jsonb_array_elements(v_row.variantes) x where x->>'l' = v_var limit 1;
+      if v_pre is null then raise exception 'Opção inválida para %', v_row.nome; end if;
+    else
+      v_pre := v_row.preco; v_var := null;
+    end if;
+    if v_pre is null then raise exception 'Item sem preço: %', v_row.nome; end if;
+
+    v_adlist := '[]'::jsonb;
+    for v_lbl in select jsonb_array_elements_text(coalesce(v_it->'a', '[]'::jsonb)) loop
+      v_found := null;
+      select x into v_found from jsonb_array_elements(v_row.adicionais) x where x->>'l' = v_lbl limit 1;
+      if v_found is null then raise exception 'Adicional inválido: %', v_lbl; end if;
+      v_pre := v_pre + coalesce((v_found->>'p')::numeric, 0);
+      v_adlist := v_adlist || jsonb_build_array(v_found);
+    end loop;
+
+    insert into pedido_itens (pedido_id, item_id, nome, variante, adicionais, qtd, preco_unit, obs)
+    values (v_ped, v_row.id, v_row.nome, v_var, v_adlist, v_q, v_pre, nullif(left(trim(coalesce(v_it->>'o', '')), 140), ''));
+  end loop;
+  return jsonb_build_object('pedido_id', v_ped, 'numero', v_num);
+end $$;
+
+create or replace function publico_chamar_garcom(p_cliente_token uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare cl clientes;
+begin
+  cl := _cliente(p_cliente_token);
+  update comandas set chamado_em = coalesce(chamado_em, now()), chamado_por = coalesce(chamado_por, cl.nome)
+   where id = cl.comanda_id and status = 'aberta';
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function garcom_mesas(p_token uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['garcom','admin']);
+  return jsonb_build_object(
+    'agora', now(),
+    'config', (select jsonb_build_object('nome', nome) from restaurantes where id = s.restaurante_id),
+    'mesas', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', m.id, 'numero', m.numero,
+        'comanda', case when c.id is null then null else jsonb_build_object(
+          'id', c.id, 'aberta_em', c.aberta_em, 'conta_pedida', c.conta_pedida,
+          'chamado_em', c.chamado_em, 'chamado_por', c.chamado_por,
+          'clientes', (select count(*) from clientes where comanda_id = c.id),
+          'pendentes', (select count(*) from pedidos p where p.comanda_id = c.id and p.status in ('novo','preparando')),
+          'prontos', (select count(*) from pedidos p where p.comanda_id = c.id and p.status = 'pronto')) end
+      ) order by nullif(regexp_replace(m.numero, '\D', '', 'g'), '')::int nulls last, m.numero)
+      from mesas m left join comandas c on c.mesa_id = m.id and c.status = 'aberta'
+      where m.ativa and m.restaurante_id = s.restaurante_id
+    ), '[]'::jsonb));
+end $$;
+
+create or replace function garcom_mesa(p_token uuid, p_mesa uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; m mesas; c comandas;
+begin
+  s := _sessao(p_token, array['garcom','admin']);
+  select * into m from mesas where id = p_mesa and ativa and restaurante_id = s.restaurante_id;
+  if not found then raise exception 'Mesa não encontrada'; end if;
+  select * into c from comandas where mesa_id = m.id and status = 'aberta';
+  return jsonb_build_object(
+    'agora', now(),
+    'mesa', jsonb_build_object('id', m.id, 'numero', m.numero),
+    'comanda', case when c.id is null then null else jsonb_build_object(
+      'id', c.id, 'aberta_em', c.aberta_em, 'conta_pedida', c.conta_pedida, 'chamado_em', c.chamado_em, 'chamado_por', c.chamado_por) end,
+    'pedidos', case when c.id is null then '[]'::jsonb else _pedidos_json(c.id) end);
+end $$;
+
+create or replace function garcom_itens(p_token uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['garcom','admin']);
+  return coalesce((select jsonb_agg(jsonb_build_object('id', id, 'nome', nome, 'preco', preco, 'variantes', variantes,
+                                                       'adicionais', adicionais, 'esgotado', esgotado) order by nome)
+                     from cardapio where restaurante_id = s.restaurante_id), '[]'::jsonb);
+end $$;
+
+create or replace function garcom_pedir(p_token uuid, p_mesa uuid, p_itens jsonb, p_obs text default null) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; c comandas; cl clientes; v_nome text; v_res jsonb;
+begin
+  s := _sessao(p_token, array['garcom','admin']);
+  if not exists (select 1 from mesas where id = p_mesa and ativa and restaurante_id = s.restaurante_id) then raise exception 'Mesa não encontrada'; end if;
+  select * into c from comandas where mesa_id = p_mesa and status = 'aberta';
+  if not found then
+    insert into comandas (mesa_id, taxa_servico) values (p_mesa, (select taxa_servico from restaurantes where id = s.restaurante_id)) returning * into c;
+  end if;
+  v_nome := left('Garçom ' || split_part((select nome from usuarios where id = s.usuario_id), ' ', 1), 40);
+  select * into cl from clientes where comanda_id = c.id and nome = v_nome order by criado_em limit 1;
+  if not found then insert into clientes (comanda_id, nome) values (c.id, v_nome) returning * into cl; end if;
+  v_res := _criar_pedido(c.id, cl.id, p_itens, p_obs);
+  return v_res || jsonb_build_object('comanda_id', c.id);
+end $$;
+
+create or replace function garcom_entregar(p_token uuid, p_pedido uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['garcom','admin']);
+  update pedidos p set status = 'entregue', atualizado_em = now()
+   where p.id = p_pedido and p.status = 'pronto' and exists (
+     select 1 from comandas c join mesas m on m.id = c.mesa_id
+      where c.id = p.comanda_id and c.status = 'aberta' and m.restaurante_id = s.restaurante_id);
+  if not found then raise exception 'Pedido não encontrado, já entregue ou conta encerrada'; end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function garcom_atender(p_token uuid, p_comanda uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; c comandas;
+begin
+  s := _sessao(p_token, array['garcom','admin']);
+  c := _comanda_do(p_comanda, s.restaurante_id);
+  update comandas set chamado_em = null, chamado_por = null where id = c.id;
+  return jsonb_build_object('ok', true);
+end $$;
+
 -- ---------- relatórios do dono (só admin) ----------
 -- Números de um período (datas no fuso do restaurante): faturamento = pagamentos recebidos; contas = comandas encerradas.
 create or replace function _rel_resumo(p_rest uuid, p_fuso text, p_de date, p_ate date) returns jsonb
@@ -1000,7 +1155,8 @@ grant execute on function
   admin_mesas(uuid), admin_criar_mesas(uuid, int), admin_salvar_mesa(uuid, uuid, text, boolean), admin_apagar_mesa(uuid, uuid),
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
-  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), _foto_ok(text)
+  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), _foto_ok(text),
+  publico_chamar_garcom(uuid), garcom_mesas(uuid), garcom_mesa(uuid, uuid), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
 to anon, authenticated;
 
 grant execute on function

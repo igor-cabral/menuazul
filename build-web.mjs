@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 const read = p => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 const safe = s => s.replace(/<\/script/gi, '<\\/script');
-const bundle = ['api', 'runtime-site', 'runtime-kds', 'runtime-caixa', 'generator'].map(n => read('./src/' + n + '.js')).concat(read('./web/portal.js').replace('__APP_VERSION__', JSON.parse(read('./package.json')).version)).join('\n');
+const bundle = ['api', 'runtime-site', 'runtime-kds', 'runtime-caixa', 'runtime-garcom', 'generator'].map(n => read('./src/' + n + '.js')).concat(read('./web/portal.js').replace('__APP_VERSION__', JSON.parse(read('./package.json')).version)).join('\n');
 const html = read('./web/index.html')
   .replace('/*{{CSS}}*/', () => read('./web/portal.css'))
   .replace('/*{{QR}}*/', () => safe(read('./node_modules/qrcode-generator/dist/qrcode.js')))
