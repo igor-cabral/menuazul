@@ -96,7 +96,7 @@ function kdsRuntime(app, CFG) {
     setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) {} setTimeout(function () { f.remove(); printing = false; drainPrint(); }, 1800); }, 150);
   }
   function printTicket(p) { printQ.push(ticketHtml(p)); drainPrint(); }
-  function prnLabel() { return printOn ? '🖨 Impressão: ligada' : '🖨 Impressão: desligada'; }
+  function prnLabel() { return S.limitado ? '🖨 Indisponível (mensalidade)' : printOn ? '🖨 Impressão: ligada' : '🖨 Impressão: desligada'; }
 
   // lembrete sonoro a cada 30 s enquanto houver pedido novo parado, e aviso se o som estiver bloqueado pelo navegador
   var sndEl = null;
@@ -147,6 +147,7 @@ function kdsRuntime(app, CFG) {
       sound = !sound; ls('gc-kds-sound', sound ? '1' : '0'); if (sound) { audio(); beep(); } snd.textContent = sndLabel();
     } });
     app.appendChild(el('div', { class: 'top' }, [el('h1', { text: (S.setor && /bar|bebida|drink/i.test(S.setor.nome) ? '🍹 ' : '👨‍🍳 ') + (S.setor ? S.setor.nome : 'Cozinha') + ' · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), prnEl = el('button', { class: 'btn sec sm', type: 'button', id: 'prn', title: 'Imprime cada pedido novo (bobina 80 mm). Para imprimir sem a janela de confirmação, abra o navegador com --kiosk-printing.', text: prnLabel(), onclick: function () {
+      if (S.limitado) { prnEl.textContent = prnLabel(); return; } // indisponível: mensalidade em atraso
       printOn = !printOn; ls('gc-kds-print', printOn ? '1' : '0'); if (printOn) markPrinted(S.pedidos.map(function (x) { return x.id; })); prnEl.textContent = prnLabel();
     } }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
     var cols = COLS.map(function (c) {
@@ -182,7 +183,7 @@ function kdsRuntime(app, CFG) {
       S.offset = new Date(r.agora).getTime() - Date.now();
       var wasOff = !S.online; S.online = true;
       var ids = {}; r.pedidos.forEach(function (p) { ids[p.id] = 1; });
-      if (printOn) { var np = r.pedidos.filter(function (p) { return p.status === 'novo' && printed.indexOf(p.id) < 0; }); if (np.length) { markPrinted(np.map(function (p) { return p.id; })); np.forEach(printTicket); } }
+      if (printOn && !S.limitado) { var np = r.pedidos.filter(function (p) { return p.status === 'novo' && printed.indexOf(p.id) < 0; }); if (np.length) { markPrinted(np.map(function (p) { return p.id; })); np.forEach(printTicket); } }
       if (S.known) {
         var fresh = r.pedidos.filter(function (p) { return p.status === 'novo' && !S.known[p.id]; });
         if (fresh.length) { fresh.forEach(function (p) { S.fresh[p.id] = Date.now() + 6000; }); beep(); }
@@ -190,8 +191,8 @@ function kdsRuntime(app, CFG) {
       S.known = ids;
       var novos = r.pedidos.filter(function (p) { return p.status === 'novo'; }).length;
       if (novos && sound && Date.now() - (S.lastBeep || 0) > 30000) beep();
-      var sig = JSON.stringify([r.setor, r.setores, r.pedidos]);
-      if (sig !== S.sig || wasOff) { S.sig = sig; S.pedidos = r.pedidos; S.setor = r.setor; S.setores = r.setores; board(); }
+      var sig = JSON.stringify([r.setor, r.setores, r.limitado, r.pedidos]);
+      if (sig !== S.sig || wasOff) { S.sig = sig; S.pedidos = r.pedidos; S.setor = r.setor; S.setores = r.setores; S.limitado = !!r.limitado; board(); }
     }, function (e) {
       if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) { CFG.expired(); return; }
       if (S.online) { S.online = false; if (connEl) { connEl.className = 'dot off'; connEl.title = 'Sem conexão'; } }

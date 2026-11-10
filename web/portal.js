@@ -161,7 +161,9 @@
     const call = (n, a) => rpc(n, Object.assign({ p_token: sess.token }, a || {})).catch(e => { if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) expirou(); throw e; });
     const kcfg = { api: rpc, token: sess.token, nome: info.nome, expired: expirou, logout: () => sair() };
     const admin = sess.papel === 'admin';
-    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'garcom', 'setores', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel];
+    let cobr = null; // situação da mensalidade (aviso/limite por atraso), só para o administrador do restaurante
+    const PREMIUM = ['garcom', 'setores', 'relatorios'];
+    const telas = () => (admin ? ['mesas', 'caixa', 'cozinha', 'garcom', 'setores', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel]).filter(x => !(cobr && cobr.situacao === 'limitado' && PREMIUM.includes(x)));
 
     let seq = 0;
     async function show() {
@@ -169,7 +171,7 @@
       await unmount();
       if (my !== seq) return; // outra navegação chegou enquanto o editor gravava
       let t = location.hash.replace('#/', '');
-      if (!TELAS.includes(t)) t = admin ? 'mesas' : sess.papel;
+      if (!telas().includes(t)) t = admin ? 'mesas' : sess.papel;
       document.title = info.nome;
       if (t === 'caixa' || t === 'cozinha' || t === 'garcom') {
         useCss(t === 'caixa' ? CAIXA_CSS : t === 'garcom' ? GARCOM_CSS : KDS_CSS);
@@ -180,14 +182,17 @@
       }
       useCss(null);
       const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['setores', 'Setores'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['relatorios', 'Relatórios'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
-        .map(([k, l]) => h('a', { href: '#/' + k, class: k === t ? 'on' : '' }, l)));
+        .filter(([k]) => telas().includes(k)).map(([k, l]) => h('a', { href: '#/' + k, class: k === t ? 'on' : '' }, l)));
       const body = h('div', { class: t === 'editor' ? 'edwrap' : 'main' });
       const topEl = h('div', { class: 'top' }, h('img', { class: 'sym', src: BRAND.symbol, alt: BRAND.name }), h('b', {}, info.nome), nav, h('span', { class: 'sp' }), admin && verEl(), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair'));
-      root.replaceChildren(...[topEl, body, t !== 'editor' && footEl()].filter(Boolean)); // (o DOM transformaria false em texto)
+      const aviso = admin && cobr && (cobr.situacao === 'aviso' || cobr.situacao === 'limitado') ? h('div', { class: 'cobr ' + cobr.situacao, role: 'alert' },
+        cobr.situacao === 'aviso' ? '⚠ A mensalidade venceu há ' + cobr.dias + ' dias e ainda não consta como paga. Regularize para evitar a desativação de recursos (a partir do 15º dia). Fale com o suporte.'
+          : '⛔ Mensalidade em atraso há ' + cobr.dias + ' dias: garçom, setores, relatórios e impressão automática estão desativados. Pedidos, cozinha e caixa continuam funcionando. Regularize para voltar ao normal; o acesso é suspenso no 30º dia. Fale com o suporte.') : null;
+      root.replaceChildren(...[topEl, aviso, body, t !== 'editor' && footEl()].filter(Boolean)); // (o DOM transformaria false em texto)
       if (t === 'editor') topEl.addEventListener('click', e => guardaEditor(e), true); // guardaEditor é definido depois, por pEditor
       ({ mesas: pMesas, setores: pSetores, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, relatorios: pRelatorios, editor: pEditor }[t])(body, call, info, sess);
     }
-    window.onhashchange = show; show();
+    (admin ? call('admin_cobranca').then(r => { cobr = r; }).catch(() => {}) : Promise.resolve()).then(() => { window.onhashchange = show; show(); });
   }
 
   /* ----- painel: mesas e QR ----- */
@@ -245,7 +250,7 @@
     };
     draw(); return box;
   }
-  function pEquipe(box, call) { box.replaceChildren(equipeUI(() => call('admin_usuarios'), a => call('admin_usuario_salvar', a), { setores: () => call('admin_setores'), setSetor: (login, setor) => call('admin_usuario_setor', { p_login: login, p_setor: setor }) })); }
+  function pEquipe(box, call) { box.replaceChildren(equipeUI(() => call('admin_usuarios'), a => call('admin_usuario_salvar', a), { setores: () => call('admin_setores').catch(() => []), setSetor: (login, setor) => call('admin_usuario_setor', { p_login: login, p_setor: setor }) })); }
 
   /* ----- painel: configurações ----- */
   async function pConfig(box, call, info) {
@@ -428,7 +433,12 @@
       }
       painel();
     }
-    async function painel() {
+    let aba = 'restaurantes';
+    const admTop = () => h('div', { class: 'top' }, topBrand(), h('b', { class: 'tag-adm' }, 'Administração'),
+      h('nav', { class: 'nav' }, [['restaurantes', 'Restaurantes'], ['cobranca', 'Cobrança'], ['comissoes', 'Comissões']].map(([k, l]) => h('a', { href: '#', class: aba === k ? 'on' : '', 'data-aba': k, onclick: e => { e.preventDefault(); aba = k; painel(); } }, l))),
+      h('span', { class: 'sp' }), verEl(), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair'));
+    function painel() { return aba === 'cobranca' ? pCobranca() : aba === 'comissoes' ? pComissoes() : painelRestaurantes(); }
+    async function painelRestaurantes() {
       let rs; try { rs = await call('plataforma_restaurantes'); } catch (e) { return toast(e.message); }
       const nome = h('input', { id: 'r-nome', placeholder: 'Pizzaria Boa' }), slug = h('input', { id: 'r-slug', placeholder: 'pizzaria-boa' }), al = h('input', { id: 'r-alogin', placeholder: 'dono' }), an = h('input', { id: 'r-anome', placeholder: 'Nome do responsável' }), as = h('input', { id: 'r-asenha', placeholder: 'Senha inicial (6+)' });
       let tocou = false; slug.addEventListener('input', () => { tocou = true; }); nome.addEventListener('input', () => { if (!tocou) slug.value = slugify(nome.value); });
@@ -445,7 +455,7 @@
             try { await call('plataforma_salvar_restaurante', { p_id: r.id, p_nome: r.nome, p_slug: r.slug, p_ativo: !r.ativo, p_motivo: motivo }); toast(r.ativo ? 'Bloqueado' : 'Desbloqueado'); painel(); } catch (e) { toast(e.message); }
           } }, r.ativo ? 'Bloquear' : 'Desbloquear'))));
       root.replaceChildren(
-        h('div', { class: 'top' }, topBrand(), h('b', { class: 'tag-adm' }, 'Administração'), h('span', { class: 'sp' }), verEl(), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair')),
+        admTop(),
         h('div', { class: 'main' },
           h('div', { class: 'sec' }, h('h2', {}, 'Novo restaurante'),
             h('div', { class: 'grid3' }, field('Nome', nome), field('Endereço (slug)', slug), field('Login do responsável', al), field('Nome do responsável', an), field('Senha inicial', as)),
@@ -457,6 +467,83 @@
             rs.length ? h('div', { class: 'tscroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Status', 'Estrutura', 'Agora', 'Uso', 'Cardápio publicado', ''].map(x => h('th', {}, x)))), h('tbody', {}, rs.map(linha)))) : h('p', { class: 'mut' }, 'Nenhum restaurante ainda.'))));
       root.append(footEl());
     }
+    /* ----- cobrança: resultados, mensalidade, pagamentos ----- */
+    const brl = n => Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const fmtD = x => x ? String(x).slice(8, 10) + '/' + String(x).slice(5, 7) + '/' + String(x).slice(0, 4) : '—';
+    const hojeISO = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    const num = v => Number(String(v).replace(',', '.'));
+    const SIT = { em_dia: ['Em dia', 'ok'], tolerancia: ['Vencida (tolerância)', 'warn'], aviso: ['Aviso ao cliente', 'warn'], limitado: ['Recursos limitados', 'off'], suspenso: ['Suspenso', 'off'], cancelado: ['Cancelado', 'off'], bloqueado: ['Bloqueado', 'off'], sem_cobranca: ['Sem cobrança', 'mut'] };
+    async function pCobranca() {
+      let d, cm; try { [d, cm] = await Promise.all([call('plataforma_cobranca'), call('plataforma_comissoes', { p_mes: null })]); } catch (e) { return toast(e.message); }
+      const rs = d.restaurantes, ativos = rs.filter(r => !['cancelado', 'bloqueado', 'suspenso'].includes(r.situacao));
+      const mrr = ativos.filter(r => r.situacao !== 'sem_cobranca').reduce((t, r) => t + Number(r.mensalidade), 0);
+      const atraso = rs.filter(r => r.dias > 0 && !['cancelado', 'bloqueado'].includes(r.situacao)), recebido = cm.linhas.reduce((t, l) => t + Number(l.bruto), 0);
+      const aImpl = rs.filter(r => !r.implantacao_paga_em && r.situacao !== 'cancelado').reduce((t, r) => t + Number(r.implantacao), 0);
+      const kpi = (t, v, sub) => h('div', { class: 'kpi' }, h('span', { class: 'kt' }, t), h('b', {}, v), h('small', { class: 'dl' }, sub || ''));
+      const linha = r => { const [lb, cl] = SIT[r.situacao] || [r.situacao, 'mut'];
+        return h('tr', { 'data-slug': r.slug },
+          h('td', {}, h('b', {}, r.nome), h('br'), h('span', { class: 'mut' }, '/' + r.slug)),
+          h('td', {}, h('span', { class: 'tag ' + cl, 'data-sit': r.situacao }, lb), r.dias > 0 ? h('small', { class: 'mut' }, ' ' + r.dias + ' d') : null),
+          h('td', {}, brl(r.mensalidade), r.implantacao_paga_em ? null : h('small', { class: 'mut' }, ' · impl. ' + brl(r.implantacao) + ' a receber')),
+          h('td', {}, fmtD(r.vencimento)), h('td', {}, r.pedidos_30d + ' pedidos'), h('td', {}, brl(r.vendas_30d)), h('td', {}, fmtDate(r.ultima_atividade)), h('td', {}, r.vendedor || '—'),
+          h('td', {}, h('div', { class: 'row' }, h('button', { class: 'btn sm', 'data-acao': 'pagar', onclick: () => pagamento(r) }, 'Pagamento'), h('button', { class: 'btn sec sm', 'data-acao': 'cobrar', onclick: () => cobrancaEditar(r) }, 'Editar')))); };
+      root.replaceChildren(admTop(), h('div', { class: 'main' },
+        h('div', { class: 'kpis' }, kpi('Receita mensal (MRR)', brl(mrr), ativos.filter(r => r.situacao !== 'sem_cobranca').length + ' restaurantes cobrados'), kpi('Recebido neste mês', brl(recebido), 'mensalidades'),
+          kpi('Em atraso', String(atraso.length), atraso.length ? brl(atraso.reduce((t, r) => t + Number(r.mensalidade), 0)) + ' em aberto' : 'tudo em dia'), kpi('Implantações a receber', brl(aImpl))),
+        h('div', { class: 'sec' }, h('h2', {}, 'Resultados por restaurante'),
+          h('p', { class: 'mut' }, 'Regras de atraso (a partir do vencimento, sem pagamento registrado): até 7 dias tolerância · do 8º dia aviso no painel do restaurante · 15 dias recursos premium desativados · 30 dias acesso suspenso (os dados ficam guardados). Registrar o pagamento regulariza na hora.'),
+          rs.length ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Situação', 'Mensalidade', 'Vencimento', 'Pedidos 30 d', 'Vendas 30 d', 'Última atividade', 'Vendedor', ''].map(x => h('th', {}, x)))), h('tbody', {}, rs.map(linha)))) : h('p', { class: 'mut' }, 'Nenhum restaurante ainda.'))), footEl());
+    }
+    function cobrancaEditar(r) {
+      const mens = h('input', { id: 'c-mens', type: 'number', step: '0.01', min: '0', value: r.mensalidade }), impl = h('input', { id: 'c-impl', type: 'number', step: '0.01', min: '0', value: r.implantacao }),
+        venc = h('input', { id: 'c-venc', type: 'date', value: r.vencimento || '' }), vend = h('input', { id: 'c-vend', placeholder: 'Nome do vendedor', value: r.vendedor || '' }),
+        com = h('input', { id: 'c-com', type: 'number', step: '0.01', min: '0', max: '100', value: r.comissao_pct }), canc = h('input', { id: 'c-canc', type: 'date', value: r.cancelado_em || '' });
+      modal('Cobrança — ' + r.nome, close => h('div', { class: 'main', style: 'margin:0;padding:0' },
+        h('div', { class: 'grid3' }, field('Mensalidade (R$)', mens), field('Implantação (R$)', impl), field('Próximo vencimento', venc), field('Vendedor', vend), field('Comissão do vendedor (%)', com), field('Cancelado em', canc)),
+        h('p', { class: 'mut' }, 'Vencimento vazio = sem cobrança configurada (o restaurante nunca é limitado). A comissão de cada pagamento fica gravada com o % da data em que foi recebido.'),
+        h('div', {}, h('button', { class: 'btn', id: 'c-save', onclick: async () => {
+          try { await call('plataforma_cobranca_salvar', { p_rest: r.id, p_mensalidade: num(mens.value), p_implantacao: num(impl.value), p_vencimento: venc.value || null, p_vendedor: vend.value, p_comissao: num(com.value), p_cancelado: canc.value || null }); close(); toast('Salvo'); painel(); } catch (e) { toast(e.message); }
+        } }, 'Salvar'))));
+    }
+    async function pagamento(r) {
+      let hist = []; try { hist = await call('plataforma_pagamentos', { p_rest: r.id }); } catch (e) { return toast(e.message); }
+      const tipo = h('select', { id: 'p-tipo' }, [h('option', { value: 'mensalidade' }, 'Mensalidade'), h('option', { value: 'implantacao' }, 'Implantação')]);
+      const valor = h('input', { id: 'p-valor', type: 'number', step: '0.01', min: '0', value: r.mensalidade }), tarifa = h('input', { id: 'p-tarifa', type: 'number', step: '0.01', min: '0', value: '0' }),
+        data = h('input', { id: 'p-data', type: 'date', value: hojeISO() }), obs = h('input', { id: 'p-obs', placeholder: 'Observação (opcional)' });
+      tipo.addEventListener('change', () => { valor.value = tipo.value === 'mensalidade' ? r.mensalidade : r.implantacao; });
+      modal('Pagamento — ' + r.nome, close => h('div', { class: 'main', style: 'margin:0;padding:0' },
+        h('div', { class: 'grid3' }, field('Tipo', tipo), field('Valor recebido (R$)', valor), field('Tarifa do meio de pagamento (R$)', tarifa), field('Data do recebimento', data), field('Observação', obs)),
+        h('p', { class: 'mut' }, 'Cada mensalidade registrada adianta o vencimento em 1 mês e regulariza o restaurante na hora. A comissão do vendedor é calculada sobre valor − tarifa.'),
+        h('div', {}, h('button', { class: 'btn', id: 'p-ok', onclick: async () => {
+          try { const x = await call('plataforma_pagamento_registrar', { p_rest: r.id, p_tipo: tipo.value, p_valor: num(valor.value), p_tarifa: num(tarifa.value), p_recebido_em: data.value || null, p_obs: obs.value }); close(); toast('Registrado' + (tipo.value === 'mensalidade' ? ' · novo vencimento ' + fmtD(x.vencimento) : '')); painel(); } catch (e) { toast(e.message); }
+        } }, 'Registrar pagamento')),
+        h('h3', {}, 'Últimos pagamentos'),
+        hist.length ? hist.map(g => h('div', { class: 'line', 'data-pag': g.id }, h('span', { class: 'g' }, (g.tipo === 'mensalidade' ? 'Mensalidade' : 'Implantação') + ' · ' + fmtD(g.recebido_em) + (g.obs ? ' · ' + g.obs : '')),
+          h('b', {}, brl(g.valor) + (Number(g.tarifa) ? ' (tarifa ' + brl(g.tarifa) + ')' : '')), g.estornado ? h('span', { class: 'tag off' }, 'estornado') : h('button', { class: 'btn dg sm', 'data-acao': 'estornar', onclick: async () => {
+            if (!confirm('Estornar este pagamento? O vencimento volta 1 mês (mensalidade).')) return;
+            try { await call('plataforma_pagamento_estornar', { p_id: g.id }); close(); toast('Estornado'); painel(); } catch (e) { toast(e.message); } } }, 'Estornar'))) : h('p', { class: 'mut' }, 'Nenhum pagamento registrado.')));
+    }
+
+    /* ----- comissões do mês ----- */
+    let mesCom = hojeISO().slice(0, 7);
+    async function pComissoes() {
+      let d; try { d = await call('plataforma_comissoes', { p_mes: mesCom + '-01' }); } catch (e) { return toast(e.message); }
+      const mes = h('input', { id: 'm-mes', type: 'month', value: mesCom }), L = d.linhas;
+      const grupos = new Map(); L.forEach(l => { const k = l.vendedor || '(sem vendedor)'; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(l); });
+      const soma = (a, k) => a.reduce((t, l) => t + Number(l[k]), 0), bruto = soma(L, 'bruto'), tarifas = soma(L, 'tarifas'), base = soma(L, 'base'), comissao = soma(L, 'comissao');
+      const csv = () => ['Vendedor;Restaurante;Pagamentos;Recebido;Tarifas;Base;Comissão'].concat(L.map(l => [l.vendedor || '', l.nome, l.pagamentos, l.bruto, l.tarifas, l.base, l.comissao].join(';'))).join('\n');
+      const baixar = () => { const a = h('a', { href: URL.createObjectURL(new Blob(['\ufeff' + csv()], { type: 'text/csv;charset=utf-8' })), download: 'comissoes-' + mesCom + '.csv' }); document.body.append(a); a.click(); a.remove(); };
+      const kpi = (t, v, sub) => h('div', { class: 'kpi' }, h('span', { class: 'kt' }, t), h('b', {}, v), h('small', { class: 'dl' }, sub || ''));
+      root.replaceChildren(admTop(), h('div', { class: 'main' },
+        h('div', { class: 'sec' }, h('h2', {}, 'Comissões do mês'),
+          h('div', { class: 'row' }, mes, h('button', { class: 'btn sm', id: 'm-ver', onclick: () => { if (!mes.value) return; mesCom = mes.value; pComissoes(); } }, 'Ver'), h('button', { class: 'btn sec sm', id: 'm-csv', disabled: !L.length, onclick: baixar }, 'Baixar CSV')),
+          h('div', { class: 'kpis' }, kpi('Recebido no mês', brl(bruto), L.reduce((t, l) => t + Number(l.pagamentos), 0) + ' mensalidades'), kpi('Base (sem tarifas)', brl(base), 'tarifas ' + brl(tarifas)), kpi('Comissão a repassar', brl(comissao), 'pagar na última semana do mês'), kpi('Sua parte', brl(base - comissao), '+ implantações ' + brl(d.implantacoes))),
+          L.length ? [...grupos].map(([v, ls]) => h('div', { class: 'stcat', 'data-vendedor': v }, h('div', { class: 'row sb' }, h('b', {}, v), h('b', {}, 'Comissão: ' + brl(soma(ls, 'comissao')))),
+            h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Pagamentos', 'Recebido', 'Tarifas', 'Base', 'Comissão'].map(x => h('th', {}, x)))),
+              h('tbody', {}, ls.map(l => h('tr', {}, h('td', {}, l.nome), h('td', {}, String(l.pagamentos)), h('td', {}, brl(l.bruto)), h('td', {}, brl(l.tarifas)), h('td', {}, brl(l.base)), h('td', {}, h('b', {}, brl(l.comissao)))))))))) : h('p', { class: 'mut' }, 'Nenhuma mensalidade recebida neste mês.'),
+          h('p', { class: 'mut' }, 'A comissão é calculada por pagamento: (valor − tarifa) × % do vendedor na data do recebimento. Estornos saem do cálculo.'))), footEl());
+    }
+
     function editar(r) {
       const nome = h('input', { id: 'e-nome', value: r.nome }), slug = h('input', { id: 'e-slug', value: r.slug });
       modal('Editar ' + r.nome, close => h('div', { class: 'main', style: 'margin:0;padding:0' },

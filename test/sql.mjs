@@ -260,6 +260,69 @@ console.log('6d) setores de KDS, pedidos divididos e sugestões');
   ok(Object.keys(await good('publico_populares', { p_slug: 'nao-existe' })).length === 0, 'restaurante inexistente devolve vazio');
 }
 
+console.log('6e) cobrança: mensalidade, pagamentos, comissões, aviso e bloqueio gradual');
+{
+  const gar = (await login('pizza-boa', 'gar1', 'garcom123')).token;
+  const dia = async n => (await be.query("select ((now() at time zone 'America/Sao_Paulo')::date + $1::int)::text as d", [n])).rows[0].d;
+  const sit = async () => (await good('admin_cobranca', { p_token: tokA }));
+  const cob = async () => (await good('plataforma_cobranca', {}, dono)).restaurantes.find(r => r.id === A);
+  const salvar = (venc, extra = {}) => good('plataforma_cobranca_salvar', { p_rest: A, p_mensalidade: 179.9, p_implantacao: 100, p_vencimento: venc, p_vendedor: 'Carlos', p_comissao: 35, p_cancelado: null, ...extra }, dono);
+  ok(/sem_permissao/.test(await bad('plataforma_cobranca', {}, intruso)) && /permission denied/.test(await bad('plataforma_cobranca', {})), 'só o dono vê a cobrança');
+  ok(/sessao_invalida/.test(await bad('admin_cobranca', { p_token: cxA })), 'caixa não vê a situação da mensalidade');
+  const c0 = await cob();
+  ok(Number(c0.mensalidade) === 159.9 && Number(c0.implantacao) === 100 && c0.situacao === 'sem_cobranca' && c0.pedidos_30d >= 0, 'padrões: R$ 159,90 + R$ 100, sem cobrança configurada (nunca limita)');
+  ok(/inválida/.test(await bad('plataforma_cobranca_salvar', { p_rest: A, p_mensalidade: -1, p_implantacao: 100, p_vencimento: null, p_vendedor: '', p_comissao: 35, p_cancelado: null }, dono)), 'mensalidade negativa recusada');
+  ok(/Comissão inválida/.test(await bad('plataforma_cobranca_salvar', { p_rest: A, p_mensalidade: 100, p_implantacao: 100, p_vencimento: null, p_vendedor: '', p_comissao: 120, p_cancelado: null }, dono)), 'comissão acima de 100% recusada');
+  await salvar(await dia(5));
+  const c1 = await cob();
+  ok(Number(c1.mensalidade) === 179.9 && c1.situacao === 'em_dia' && c1.vendedor === 'Carlos', 'mensalidade ajustável; vencimento futuro = em dia');
+  // pagamentos e comissão
+  const rp = await good('plataforma_pagamento_registrar', { p_rest: A, p_tipo: 'mensalidade', p_valor: 179.9, p_tarifa: 2, p_recebido_em: await dia(0), p_obs: 'Pix' }, dono);
+  const venc1 = (await be.query("select ($1::date + interval '1 month')::date::text as d", [await dia(5)])).rows[0].d;
+  ok(rp.vencimento === venc1, 'mensalidade paga adianta o vencimento em 1 mês');
+  ok(/Tarifa inválida/.test(await bad('plataforma_pagamento_registrar', { p_rest: A, p_tipo: 'mensalidade', p_valor: 10, p_tarifa: 11, p_recebido_em: null, p_obs: '' }, dono)), 'tarifa maior que o valor recusada');
+  await good('plataforma_pagamento_registrar', { p_rest: A, p_tipo: 'implantacao', p_valor: 100, p_tarifa: 0, p_recebido_em: await dia(0), p_obs: null }, dono);
+  ok((await cob()).implantacao_paga_em === await dia(0), 'implantação registrada');
+  const cm = await good('plataforma_comissoes', { p_mes: await dia(0) }, dono), lin = cm.linhas.find(l => l.restaurante_id === A);
+  ok(lin && near(lin.bruto, 179.9) && near(lin.base, 177.9) && near(lin.comissao, 62.27) && lin.vendedor === 'Carlos', 'comissão = (valor − tarifa) × 35% = R$ 62,27');
+  ok(near(cm.implantacoes, 100), 'implantação aparece à parte (100% do titular)');
+  const hist = await good('plataforma_pagamentos', { p_rest: A }, dono);
+  ok(hist.length === 2 && hist.some(h => h.tipo === 'mensalidade' && near(h.tarifa, 2)), 'histórico de pagamentos');
+  const mens = hist.find(h => h.tipo === 'mensalidade');
+  await good('plataforma_pagamento_estornar', { p_id: mens.id }, dono);
+  ok((await cob()).vencimento === await dia(5), 'estorno devolve o vencimento');
+  ok((await good('plataforma_comissoes', { p_mes: await dia(0) }, dono)).linhas.every(l => l.restaurante_id !== A), 'pagamento estornado não gera comissão');
+  ok(/já estornado|não encontrado/i.test(await bad('plataforma_pagamento_estornar', { p_id: mens.id }, dono)), 'não estorna duas vezes');
+  // atraso: tolerância (1–7), aviso (8–14), limitado (15–29), suspenso (30+)
+  await salvar(await dia(-3)); let c = await sit();
+  ok(c.situacao === 'tolerancia' && c.dias === 3, 'até 7 dias: tolerância');
+  ok(Array.isArray((await good('garcom_mesas', { p_token: gar })).mesas), 'tolerância não tira nenhum recurso');
+  await salvar(await dia(-10)); c = await sit();
+  ok(c.situacao === 'aviso' && c.dias === 10, 'do 8º dia: aviso');
+  ok(Array.isArray((await good('garcom_mesas', { p_token: gar })).mesas) && (await good('admin_relatorio', { p_token: tokA, p_de: null, p_ate: null })).dias === 1, 'no aviso os recursos continuam funcionando');
+  await salvar(await dia(-20)); c = await sit();
+  ok(c.situacao === 'limitado', 'a partir de 15 dias: recursos premium desativados');
+  for (const [nome, fn, args, t] of [['garçom', 'garcom_mesas', {}, gar], ['relatórios', 'admin_relatorio', { p_de: null, p_ate: null }, tokA], ['setores', 'admin_setores', {}, tokA]])
+    ok(/mensalidade em atraso/.test(await bad(fn, { p_token: t, ...args })), nome + ' bloqueado com mensalidade em atraso');
+  ok(Object.keys(await good('publico_populares', { p_slug: 'pizza-boa' })).length === 0, 'sugestões automáticas desligadas');
+  ok((await good('kds_listar', { p_token: kdA })).limitado === true, 'KDS sabe que a impressão automática está indisponível');
+  ok(Array.isArray((await good('caixa_mesas', { p_token: cxA })).mesas) && Array.isArray((await good('kds_listar', { p_token: kdA })).pedidos) && !!(await good('publico_cardapio', { p_slug: 'pizza-boa' })).modelo, 'caixa, cozinha e cardápio continuam funcionando');
+  await salvar(await dia(-40));
+  ok(/restaurante_bloqueado/.test(await bad('admin_cobranca', { p_token: tokA })), 'a partir de 30 dias: acesso suspenso');
+  ok(/restaurante_bloqueado/.test(await bad('publico_cardapio', { p_slug: 'pizza-boa' })), 'cardápio público fora do ar na suspensão');
+  ok((await login('pizza-boa', 'dono', 'secreta1')).ok === false, 'login da equipe bloqueado na suspensão');
+  ok((await cob()).situacao === 'suspenso' && (await cob()).dias >= 40, 'dono vê o restaurante suspenso');
+  ok((await be.query('select count(*)::int c from cardapio where restaurante_id = $1', [A])).rows[0].c > 0, 'dados continuam guardados na suspensão');
+  // pagamento regulariza
+  await good('plataforma_pagamento_registrar', { p_rest: A, p_tipo: 'mensalidade', p_valor: 179.9, p_tarifa: 0, p_recebido_em: await dia(0), p_obs: null }, dono);
+  ok((await login('pizza-boa', 'dono', 'secreta1')).ok === true, 'registrar o pagamento libera o acesso de novo');
+  await salvar(null);
+  ok((await cob()).situacao === 'sem_cobranca', 'vencimento vazio desliga a cobrança');
+  await salvar(null, { p_cancelado: await dia(0) });
+  ok((await cob()).situacao === 'cancelado', 'restaurante cancelado aparece como cancelado');
+  await salvar(null);
+}
+
 console.log('7) bloqueio de restaurante');
 await good('plataforma_salvar_restaurante', { p_id: B, p_nome: 'Burger', p_slug: 'burger', p_ativo: false, p_motivo: 'Inadimplente' }, dono);
 ok((await be.query('select count(*)::int n from staff_sessoes where restaurante_id = $1', [B])).rows[0].n === 0, 'sessões do restaurante bloqueado foram apagadas');
