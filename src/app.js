@@ -529,6 +529,7 @@
     return h('div', { class: 'pin' },
       textField('Aviso no topo (opcional)', 'options.notice', { multiline: true, rows: 2, placeholder: 'Ex.: Entregas somente após as 18h' }),
       checkField('Campo de busca no cardápio', 'options.showSearch'),
+      checkField('Selo "🔥 Mais pedido" (automático)', 'options.showPopular', 'Marca os 2 itens mais pedidos de cada categoria nos últimos 30 dias. Só aparece no cardápio online, quando há histórico suficiente.'),
       section('Carrinho de pedidos'),
       checkField('Ativar carrinho', 'options.cartEnabled', 'O cliente monta o pedido e envia pronto pelo WhatsApp. Precisa do WhatsApp preenchido.'),
       h('div', { class: 'f' }, h('span', { class: 'f-l' }, 'Como o cliente recebe'),

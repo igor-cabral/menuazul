@@ -142,7 +142,7 @@ const MenuGen = (function () {
         showSearch: true, showOpenStatus: true,
         cartEnabled: true, typeDelivery: true, typePickup: true, typeDinein: false,
         deliveryFee: '', minOrder: '', payments: 'Pix, Cartão, Dinheiro',
-        orderButton: true, itemOrderButton: false, platformBrand: true,
+        orderButton: true, itemOrderButton: false, platformBrand: true, showPopular: true,
         orderMessage: 'Olá! Gostaria de fazer um pedido:',
         notice: '', footerText: '', creditText: '', creditUrl: '',
         seoDescription: '', siteUrl: '', domain: '',
@@ -311,6 +311,14 @@ footer{text-align:center;color:var(--muted);font-size:.82rem;padding:38px 16px 1
 .pw div{display:flex;flex-direction:column;align-items:center;gap:7px}
 .pw span{font-size:.62rem;letter-spacing:.16em;text-transform:uppercase;font-weight:700;opacity:.85}
 .pw img{height:26px;width:auto;display:block}
+.badge.hot{background:#ff6a1a;color:#fff}
+.sug{margin-top:14px}.sug h4{font-size:.9rem;margin-bottom:8px}
+.sug-r{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.sug-i{flex:0 0 auto;min-width:140px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
+.sug-i b{font-size:.9rem}.sug-i span{color:var(--muted);font-size:.84rem}
+.sug-i button{border:0;border-radius:99px;padding:7px 12px;font-weight:700;cursor:pointer;background:var(--primary);color:var(--on-primary)}
+.achips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.achips button{border:1px dashed var(--primary);background:transparent;color:var(--text);border-radius:99px;padding:4px 10px;font-size:.78rem;cursor:pointer}
 .send.alt{background:var(--surface);color:var(--text);border:1px solid rgba(128,128,128,.35);margin-top:10px}
 footer p+p{margin-top:6px}
 footer a{text-decoration:underline;text-underline-offset:3px}
@@ -428,11 +436,14 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     /* dados para o runtime */
     const sumLines = scheduleSummary(c.schedule);
     const hasSched = sumLines.length > 0;
+    // mais pedidos do restaurante (calculados no servidor; só com histórico suficiente)
+    const pop = opts.populares && opts.populares.qtd && Number(opts.populares.total) >= 30 ? opts.populares : null;
     const menuData = {
       tz: c.tz,
       sched: (hasSched && o.showOpenStatus) ? c.schedule.map(s => ({ o: s.open ? 1 : 0, f: s.from, t: s.to })) : [],
       items: {},
       cart: null,
+      pop: pop && cartOn ? { qtd: pop.qtd, juntos: pop.juntos || {}, ad: pop.adicionais || {} } : null,
       sys: mesa ? { url: String(mesa.url).replace(/\/+$/, ''), key: mesa.key, slug: mesa.slug, codigo: mesa.codigo, nome: d.name || '', logo: logoSrc || '' } : null
     };
     if (cartOn) {
@@ -467,6 +478,13 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       .filter(cat => cat.items.length && String(cat.name).trim());
     const catId = (cat, k) => 'c-' + slugify(cat.name) + '-' + (k + 1);
 
+    // "Mais pedido": os 2 itens mais vendidos de cada categoria (últimos 30 dias, mínimo de 5 unidades). Só com histórico suficiente (calculado no servidor).
+    const hot = new Set();
+    if (pop && o.showPopular !== false) {
+      cats.forEach(cat => cat.items.filter(i => !i.soldOut && Number(pop.qtd[i.id]) >= 5)
+        .sort((a, b) => pop.qtd[b.id] - pop.qtd[a.id]).slice(0, 2).forEach(i => hot.add(i.id)));
+    }
+
     const itemHtml = it => {
       const vars = it.variants.filter(v => String(v.label).trim() || String(v.price).trim());
       const adds = it.addons.filter(a => String(a.label).trim());
@@ -500,7 +518,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
         ? '<img class="thumb" loading="lazy" alt="' + esc(it.name) + '" src="' + esc(img(it.image, 'produtos/' + slugify(it.name))) + '">' : '';
       const search = norm(it.name + ' ' + it.description + ' ' + it.tags.map(k => TAGS[k][1]).join(' '));
       return '<article class="item' + (it.featured ? ' featured' : '') + (it.soldOut ? ' soldout' : '') + '" data-s="' + esc(search) + '">' +
-        '<div class="item-body"><h3>' + esc(it.name) + (it.featured ? '<span class="badge">Destaque</span>' : '') + '</h3>' +
+        '<div class="item-body"><h3>' + esc(it.name) + (it.featured ? '<span class="badge">Destaque</span>' : '') + (hot.has(it.id) ? '<span class="badge hot">🔥 Mais pedido</span>' : '') + '</h3>' +
         tagsHtml + (it.description ? '<p class="desc">' + escBr(it.description) + '</p>' : '') + addsHtml + priceHtml + btn + '</div>' + im + '</article>';
     };
 

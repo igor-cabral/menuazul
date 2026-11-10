@@ -156,6 +156,26 @@ create table if not exists pagamentos (
 create index if not exists pagamentos_comanda on pagamentos (comanda_id);
 
 -- ---------- internas (nunca expostas) ----------
+-- ---------- setores de KDS (cozinha, bar, ...) ----------
+-- O admin cria os setores, escolhe para qual setor vai cada item do cardápio e cria os usuários de cada KDS.
+create table if not exists setores (
+  id uuid primary key default gen_random_uuid(),
+  restaurante_id uuid not null references restaurantes(id) on delete cascade,
+  nome text not null,
+  padrao boolean not null default false,   -- recebe os itens sem setor definido
+  criado_em timestamptz not null default now(),
+  unique (restaurante_id, nome)
+);
+create unique index if not exists setor_padrao_unico on setores (restaurante_id) where padrao;
+alter table setores enable row level security;
+alter table cardapio add column if not exists setor_id uuid references setores(id) on delete set null;
+alter table usuarios add column if not exists setor_id uuid references setores(id) on delete set null;   -- KDS: só vê os pedidos do seu setor (vazio = vê todos)
+alter table pedidos add column if not exists setor_id uuid references setores(id) on delete set null;
+alter table pedidos add column if not exists lote uuid;                    -- pedidos criados juntos (um por setor)
+alter table pedido_itens add column if not exists origem text;             -- 'sugestao' = veio da sugestão do carrinho
+alter table restaurantes add column if not exists populares jsonb;         -- cache dos itens mais pedidos (1 h)
+alter table restaurantes add column if not exists populares_em timestamptz;
+
 create or replace function _sessao(p_token uuid, p_papeis text[]) returns staff_sessoes
 language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare s staff_sessoes; v_rest_ativo boolean; v_user_ativo boolean;
@@ -238,14 +258,14 @@ create or replace function _pedidos_json(p_comanda uuid) returns jsonb
 language sql stable security definer set search_path = public, pg_temp as $$
   select coalesce(jsonb_agg(jsonb_build_object(
     'id', p.id, 'numero', p.numero, 'status', p.status, 'criado_em', p.criado_em, 'obs', p.obs,
-    'cliente_id', p.cliente_id, 'cliente', cl.nome,
+    'cliente_id', p.cliente_id, 'cliente', cl.nome, 'setor', st.nome,
     'itens', (
       select coalesce(jsonb_agg(jsonb_build_object(
         'id', i.id, 'nome', i.nome, 'variante', i.variante, 'adicionais', i.adicionais,
         'qtd', i.qtd, 'preco_unit', i.preco_unit, 'obs', i.obs) order by i.ordem), '[]'::jsonb)
       from pedido_itens i where i.pedido_id = p.id)
   ) order by p.criado_em, p.numero), '[]'::jsonb)
-  from pedidos p left join clientes cl on cl.id = p.cliente_id
+  from pedidos p left join clientes cl on cl.id = p.cliente_id left join setores st on st.id = p.setor_id
   where p.comanda_id = p_comanda
 $$;
 
@@ -300,8 +320,10 @@ end $$;
 
 create or replace function _usuarios_json(p_rest uuid) returns jsonb
 language sql stable security definer set search_path = public, pg_temp as $$
-  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'login', login, 'nome', nome, 'papel', papel, 'ativo', ativo)
-         order by papel, login), '[]'::jsonb) from usuarios where restaurante_id = p_rest
+  select coalesce(jsonb_agg(jsonb_build_object('id', u.id, 'login', u.login, 'nome', u.nome, 'papel', u.papel, 'ativo', u.ativo,
+                                               'setor_id', u.setor_id, 'setor', st.nome)
+         order by u.papel, u.login), '[]'::jsonb)
+    from usuarios u left join setores st on st.id = u.setor_id where u.restaurante_id = p_rest
 $$;
 
 -- ---------- público ----------
@@ -376,55 +398,15 @@ end $$;
 
 create or replace function publico_pedir(p_cliente_token uuid, p_itens jsonb, p_obs text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare
-  cl clientes; c comandas; v_rest uuid; v_ped uuid; v_num int;
-  v_it jsonb; v_row cardapio; v_pre numeric; v_var text; v_q int; v_adlist jsonb; v_lbl text; v_found jsonb;
+declare cl clientes; c comandas;
 begin
   cl := _cliente(p_cliente_token);
   select * into c from comandas where id = cl.comanda_id;
   if c.status <> 'aberta' then raise exception 'conta_encerrada'; end if;
-  select m.restaurante_id into v_rest from mesas m where m.id = c.mesa_id;
-  if p_itens is null or jsonb_typeof(p_itens) <> 'array' or jsonb_array_length(p_itens) = 0 then raise exception 'Pedido vazio'; end if;
-  if jsonb_array_length(p_itens) > 40 then raise exception 'Pedido muito grande'; end if;
-  if (select count(*) from pedidos where cliente_id = cl.id and criado_em > now() - interval '1 minute') >= 6 then
+  if (select count(distinct coalesce(lote, id)) from pedidos where cliente_id = cl.id and criado_em > now() - interval '1 minute') >= 6 then
     raise exception 'Muitos pedidos seguidos. Aguarde um instante.';
   end if;
-
-  update restaurantes set seq_pedido = seq_pedido + 1 where id = v_rest returning seq_pedido into v_num;
-  insert into pedidos (numero, comanda_id, cliente_id, obs)
-  values (v_num, c.id, cl.id, nullif(left(trim(coalesce(p_obs, '')), 200), '')) returning id into v_ped;
-
-  for v_it in select * from jsonb_array_elements(p_itens) loop
-    v_q := coalesce(nullif(v_it->>'q', '')::int, 1);
-    if v_q < 1 or v_q > 50 then raise exception 'Quantidade inválida'; end if;
-    select * into v_row from cardapio where restaurante_id = v_rest and id = v_it->>'id';
-    if not found then raise exception 'Item indisponível. Atualize a página e tente de novo.'; end if;
-    if v_row.esgotado then raise exception 'Esgotado: %', v_row.nome; end if;
-
-    v_var := coalesce(v_it->>'v', '');
-    if jsonb_array_length(v_row.variantes) > 0 then
-      v_pre := null;
-      select (x->>'p')::numeric, x->>'l' into v_pre, v_var
-        from jsonb_array_elements(v_row.variantes) x where x->>'l' = v_var limit 1;
-      if v_pre is null then raise exception 'Opção inválida para %', v_row.nome; end if;
-    else
-      v_pre := v_row.preco; v_var := null;
-    end if;
-    if v_pre is null then raise exception 'Item sem preço: %', v_row.nome; end if;
-
-    v_adlist := '[]'::jsonb;
-    for v_lbl in select jsonb_array_elements_text(coalesce(v_it->'a', '[]'::jsonb)) loop
-      v_found := null;
-      select x into v_found from jsonb_array_elements(v_row.adicionais) x where x->>'l' = v_lbl limit 1;
-      if v_found is null then raise exception 'Adicional inválido: %', v_lbl; end if;
-      v_pre := v_pre + coalesce((v_found->>'p')::numeric, 0);
-      v_adlist := v_adlist || jsonb_build_array(v_found);
-    end loop;
-
-    insert into pedido_itens (pedido_id, item_id, nome, variante, adicionais, qtd, preco_unit, obs)
-    values (v_ped, v_row.id, v_row.nome, v_var, v_adlist, v_q, v_pre, nullif(left(trim(coalesce(v_it->>'o', '')), 140), ''));
-  end loop;
-  return jsonb_build_object('pedido_id', v_ped, 'numero', v_num);
+  return _criar_pedido(c.id, cl.id, p_itens, p_obs);
 end $$;
 
 create or replace function publico_cancelar(p_cliente_token uuid, p_pedido uuid) returns jsonb
@@ -485,13 +467,20 @@ end $$;
 -- ---------- cozinha ----------
 create or replace function kds_listar(p_token uuid) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare s staff_sessoes;
+declare s staff_sessoes; v_setor uuid; v_nome text; v_padrao uuid;
 begin
   s := _sessao(p_token, array['cozinha','admin']);
-  return jsonb_build_object('agora', now(), 'pedidos', coalesce((
+  select id into v_padrao from setores where restaurante_id = s.restaurante_id and padrao;
+  if s.papel = 'cozinha' then
+    select u.setor_id, st.nome into v_setor, v_nome from usuarios u left join setores st on st.id = u.setor_id where u.id = s.usuario_id;
+  end if;
+  return jsonb_build_object('agora', now(),
+    'setor', case when v_setor is null then null else jsonb_build_object('id', v_setor, 'nome', v_nome) end,
+    'setores', (select count(*) from setores where restaurante_id = s.restaurante_id),
+    'pedidos', coalesce((
     select jsonb_agg(jsonb_build_object(
       'id', p.id, 'numero', p.numero, 'status', p.status, 'criado_em', p.criado_em, 'obs', p.obs,
-      'mesa', m.numero, 'cliente', cl.nome,
+      'mesa', m.numero, 'cliente', cl.nome, 'setor', st.nome,
       'itens', (select coalesce(jsonb_agg(jsonb_build_object(
                   'nome', i.nome, 'variante', i.variante, 'adicionais', i.adicionais, 'qtd', i.qtd, 'obs', i.obs
                 ) order by i.ordem), '[]'::jsonb) from pedido_itens i where i.pedido_id = p.id)
@@ -500,20 +489,28 @@ begin
     join comandas c on c.id = p.comanda_id and c.status = 'aberta'
     join mesas m on m.id = c.mesa_id and m.restaurante_id = s.restaurante_id
     left join clientes cl on cl.id = p.cliente_id
+    left join setores st on st.id = p.setor_id
     where p.status in ('novo','preparando','pronto')
+      and (v_setor is null or p.setor_id = v_setor or (p.setor_id is null and v_setor = v_padrao))
   ), '[]'::jsonb));
 end $$;
 
 create or replace function pedido_status(p_token uuid, p_pedido uuid, p_status text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare s staff_sessoes;
+declare s staff_sessoes; v_setor uuid; v_padrao uuid;
 begin
   s := _sessao(p_token, array['cozinha','caixa','admin']);
   if p_status not in ('novo','preparando','pronto','entregue','cancelado') then raise exception 'Status inválido'; end if;
+  if s.papel = 'cozinha' then
+    select setor_id into v_setor from usuarios where id = s.usuario_id;
+    select id into v_padrao from setores where restaurante_id = s.restaurante_id and padrao;
+  end if;
   update pedidos p set status = p_status, atualizado_em = now(),
          preparando_em = case when p_status = 'novo' then null when p_status = 'preparando' and p.preparando_em is null then now() else p.preparando_em end,
          pronto_em = case when p_status = 'pronto' then now() when p_status in ('novo', 'preparando') then null else p.pronto_em end
-   where p.id = p_pedido and exists (
+   where p.id = p_pedido
+     and (v_setor is null or p.setor_id = v_setor or (p.setor_id is null and v_setor = v_padrao))
+     and exists (
      select 1 from comandas c join mesas m on m.id = c.mesa_id
       where c.id = p.comanda_id and c.status = 'aberta' and m.restaurante_id = s.restaurante_id);
   if not found then raise exception 'Pedido não encontrado ou conta já encerrada'; end if;
@@ -764,7 +761,7 @@ language plpgsql security definer set search_path = public, pg_temp as $$
 declare s staff_sessoes;
 begin
   s := _sessao(p_token, array['admin','caixa']);
-  return coalesce((select jsonb_agg(jsonb_build_object('id', id, 'nome', nome, 'esgotado', esgotado) order by nome)
+  return coalesce((select jsonb_agg(jsonb_build_object('id', id, 'nome', nome, 'esgotado', esgotado, 'setor_id', setor_id) order by nome)
                    from cardapio where restaurante_id = s.restaurante_id), '[]'::jsonb);
 end $$;
 
@@ -858,15 +855,16 @@ end $$;
 -- Publica o cardápio (modelo do editor + tabela de preços usada para validar pedidos)
 create or replace function plataforma_publicar(p_rest uuid, p_modelo jsonb, p_itens jsonb) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare v_n int;
+declare v_n int; v_old jsonb;
 begin
   perform _plataforma();
   if p_modelo is null or jsonb_typeof(p_modelo) <> 'object' or p_itens is null or jsonb_typeof(p_itens) <> 'array' then raise exception 'Cardápio inválido'; end if;
   update restaurantes set cardapio = p_modelo, publicado_em = now() where id = p_rest;
   if not found then raise exception 'Restaurante não encontrado'; end if;
+  v_old := (select coalesce(jsonb_object_agg(id, setor_id), '{}'::jsonb) from cardapio where restaurante_id = p_rest and setor_id is not null);
   delete from cardapio where restaurante_id = p_rest;
-  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado)
-  select p_rest, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false)
+  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado, setor_id)
+  select p_rest, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false), (v_old ->> x.id)::uuid
   from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean);
   get diagnostics v_n = row_count;
   return jsonb_build_object('itens', v_n);
@@ -884,24 +882,27 @@ end $$;
 
 create or replace function admin_publicar(p_token uuid, p_modelo jsonb, p_itens jsonb) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare s staff_sessoes; v_n int;
+declare s staff_sessoes; v_n int; v_old jsonb;
 begin
   s := _sessao(p_token, array['admin']);
   if p_modelo is null or jsonb_typeof(p_modelo) <> 'object' or p_itens is null or jsonb_typeof(p_itens) <> 'array' then raise exception 'Cardápio inválido'; end if;
   update restaurantes set cardapio = p_modelo, publicado_em = now() where id = s.restaurante_id;
+  v_old := (select coalesce(jsonb_object_agg(id, setor_id), '{}'::jsonb) from cardapio where restaurante_id = s.restaurante_id and setor_id is not null);
   delete from cardapio where restaurante_id = s.restaurante_id;
-  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado)
-  select s.restaurante_id, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false)
+  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado, setor_id)
+  select s.restaurante_id, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false), (v_old ->> x.id)::uuid
   from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean);
   get diagnostics v_n = row_count;
   return jsonb_build_object('itens', v_n);
 end $$;
 
 -- ---------- garçom: atende as mesas (pedidos, entregas e chamados) ----------
--- cria um pedido numa comanda aberta (mesma regra de preço/variante/adicional do pedido feito pelo cliente)
+-- Cria os pedidos de uma comanda aberta (mesma regra de preço/variante/adicional para cliente e garçom).
+-- Itens de setores diferentes (cozinha, bar...) viram um pedido para cada setor, criados juntos (mesmo "lote").
 create or replace function _criar_pedido(p_comanda uuid, p_cliente uuid, p_itens jsonb, p_obs text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare c comandas; v_rest uuid; v_ped uuid; v_num int;
+declare c comandas; v_rest uuid; v_lote uuid := gen_random_uuid(); v_padrao uuid; v_setor uuid; v_key text;
+  v_ped uuid; v_num int; v_map jsonb := '{}'::jsonb; v_lista jsonb := '[]'::jsonb; v_obs text;
   v_it jsonb; v_row cardapio; v_pre numeric; v_var text; v_q int; v_adlist jsonb; v_lbl text; v_found jsonb;
 begin
   select * into c from comandas where id = p_comanda;
@@ -909,10 +910,8 @@ begin
   select m.restaurante_id into v_rest from mesas m where m.id = c.mesa_id;
   if p_itens is null or jsonb_typeof(p_itens) <> 'array' or jsonb_array_length(p_itens) = 0 then raise exception 'Pedido vazio'; end if;
   if jsonb_array_length(p_itens) > 40 then raise exception 'Pedido muito grande'; end if;
-
-  update restaurantes set seq_pedido = seq_pedido + 1 where id = v_rest returning seq_pedido into v_num;
-  insert into pedidos (numero, comanda_id, cliente_id, obs)
-  values (v_num, c.id, p_cliente, nullif(left(trim(coalesce(p_obs, '')), 200), '')) returning id into v_ped;
+  v_obs := nullif(left(trim(coalesce(p_obs, '')), 200), '');
+  select id into v_padrao from setores where restaurante_id = v_rest and padrao;
 
   for v_it in select * from jsonb_array_elements(p_itens) loop
     v_q := coalesce(nullif(v_it->>'q', '')::int, 1);
@@ -941,10 +940,24 @@ begin
       v_adlist := v_adlist || jsonb_build_array(v_found);
     end loop;
 
-    insert into pedido_itens (pedido_id, item_id, nome, variante, adicionais, qtd, preco_unit, obs)
-    values (v_ped, v_row.id, v_row.nome, v_var, v_adlist, v_q, v_pre, nullif(left(trim(coalesce(v_it->>'o', '')), 140), ''));
+    -- pedido do setor deste item (cria na primeira vez)
+    v_setor := coalesce(v_row.setor_id, v_padrao);
+    v_key := coalesce(v_setor::text, 'sem');
+    v_ped := (v_map ->> v_key)::uuid;
+    if v_ped is null then
+      update restaurantes set seq_pedido = seq_pedido + 1 where id = v_rest returning seq_pedido into v_num;
+      insert into pedidos (numero, comanda_id, cliente_id, obs, setor_id, lote)
+      values (v_num, c.id, p_cliente, v_obs, v_setor, v_lote) returning id into v_ped;
+      v_map := v_map || jsonb_build_object(v_key, v_ped);
+      v_lista := v_lista || jsonb_build_array(jsonb_build_object('pedido_id', v_ped, 'numero', v_num,
+                   'setor', (select nome from setores where id = v_setor)));
+    end if;
+
+    insert into pedido_itens (pedido_id, item_id, nome, variante, adicionais, qtd, preco_unit, obs, origem)
+    values (v_ped, v_row.id, v_row.nome, v_var, v_adlist, v_q, v_pre, nullif(left(trim(coalesce(v_it->>'o', '')), 140), ''),
+            case when v_it->>'src' = 'sugestao' then 'sugestao' end);
   end loop;
-  return jsonb_build_object('pedido_id', v_ped, 'numero', v_num);
+  return jsonb_build_object('pedido_id', (v_lista->0->>'pedido_id')::uuid, 'numero', (v_lista->0->>'numero')::int, 'pedidos', v_lista);
 end $$;
 
 create or replace function publico_chamar_garcom(p_cliente_token uuid) returns jsonb
@@ -1058,7 +1071,7 @@ begin
   select count(*), avg(extract(epoch from (c.encerrada_em - c.aberta_em)) / 60) into v_contas, v_perm
     from comandas c join mesas m on m.id = c.mesa_id
    where m.restaurante_id = p_rest and c.status = 'encerrada' and (c.encerrada_em at time zone p_fuso)::date between p_de and p_ate;
-  select count(*) into v_ped
+  select count(distinct coalesce(p.lote, p.id)) into v_ped
     from pedidos p join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
    where m.restaurante_id = p_rest and p.status <> 'cancelado' and (p.criado_em at time zone p_fuso)::date between p_de and p_ate;
   select coalesce(sum(i.qtd), 0) into v_itens
@@ -1069,6 +1082,10 @@ begin
    where m.restaurante_id = p_rest and p.status <> 'cancelado' and p.pronto_em is not null and (p.criado_em at time zone p_fuso)::date between p_de and p_ate;
   return jsonb_build_object(
     'faturamento', v_fat, 'contas', v_contas, 'pedidos', v_ped, 'itens', v_itens,
+    'sug_itens', (select coalesce(sum(i.qtd), 0) from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+                   where i.origem = 'sugestao' and m.restaurante_id = p_rest and p.status <> 'cancelado' and (p.criado_em at time zone p_fuso)::date between p_de and p_ate),
+    'sug_receita', (select coalesce(sum(i.qtd * i.preco_unit), 0) from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+                   where i.origem = 'sugestao' and m.restaurante_id = p_rest and p.status <> 'cancelado' and (p.criado_em at time zone p_fuso)::date between p_de and p_ate),
     'ticket_medio', case when v_contas > 0 then round(v_fat / v_contas, 2) else null end,
     'permanencia_min', round(v_perm, 0), 'preparo_min', round(v_prep, 1),
     'por_metodo', (select coalesce(jsonb_object_agg(q.metodo, q.t), '{}'::jsonb) from (
@@ -1107,7 +1124,7 @@ begin
              group by i.item_id) v on v.item_id = x.id
          where x.restaurante_id = s.restaurante_id order by 2, 1 limit 10) r),
     'por_hora', (select coalesce(jsonb_agg(coalesce(q.n, 0) order by h.h), '[]'::jsonb) from generate_series(0, 23) as h(h) left join (
-        select extract(hour from (p.criado_em at time zone v_fuso))::int as hr, count(*) as n
+        select extract(hour from (p.criado_em at time zone v_fuso))::int as hr, count(distinct coalesce(p.lote, p.id)) as n
           from pedidos p join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
          where m.restaurante_id = s.restaurante_id and p.status <> 'cancelado' and (p.criado_em at time zone v_fuso)::date between v_de and v_ate
          group by 1) q on q.hr = h.h),
@@ -1116,6 +1133,139 @@ begin
           from esgotado_log l left join cardapio ca on ca.restaurante_id = l.restaurante_id and ca.id = l.item_id
          where l.restaurante_id = s.restaurante_id and l.esgotado and (l.em at time zone v_fuso)::date between v_de and v_ate
          group by 1 order by 2 desc, 1 limit 10) r));
+end $$;
+
+-- ---------- setores de KDS (admin) ----------
+create or replace function admin_setores(p_token uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['admin']);
+  return coalesce((select jsonb_agg(jsonb_build_object('id', x.id, 'nome', x.nome, 'padrao', x.padrao,
+            'itens', (select count(*) from cardapio c where c.setor_id = x.id),
+            'usuarios', (select count(*) from usuarios u where u.setor_id = x.id and u.ativo)) order by x.padrao desc, x.nome)
+          from setores x where x.restaurante_id = s.restaurante_id), '[]'::jsonb);
+end $$;
+
+create or replace function admin_setor_salvar(p_token uuid, p_id uuid, p_nome text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; v_nome text := left(trim(coalesce(p_nome, '')), 30);
+begin
+  s := _sessao(p_token, array['admin']);
+  if v_nome = '' then raise exception 'Informe o nome do setor'; end if;
+  if p_id is null then
+    if (select count(*) from setores where restaurante_id = s.restaurante_id) >= 10 then raise exception 'Limite de 10 setores'; end if;
+    insert into setores (restaurante_id, nome, padrao)
+    values (s.restaurante_id, v_nome, not exists (select 1 from setores where restaurante_id = s.restaurante_id));
+  else
+    update setores set nome = v_nome where id = p_id and restaurante_id = s.restaurante_id;
+    if not found then raise exception 'Setor não encontrado'; end if;
+  end if;
+  return jsonb_build_object('ok', true);
+exception when unique_violation then
+  raise exception 'Já existe um setor com esse nome';
+end $$;
+
+create or replace function admin_setor_padrao(p_token uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['admin']);
+  if not exists (select 1 from setores where id = p_id and restaurante_id = s.restaurante_id) then raise exception 'Setor não encontrado'; end if;
+  update setores set padrao = false where restaurante_id = s.restaurante_id and padrao;
+  update setores set padrao = true where id = p_id;
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function admin_setor_excluir(p_token uuid, p_id uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; x setores;
+begin
+  s := _sessao(p_token, array['admin']);
+  select * into x from setores where id = p_id and restaurante_id = s.restaurante_id;
+  if not found then raise exception 'Setor não encontrado'; end if;
+  if x.padrao and exists (select 1 from setores where restaurante_id = s.restaurante_id and id <> x.id) then
+    raise exception 'Escolha outro setor como padrão antes de excluir este';
+  end if;
+  delete from setores where id = x.id;   -- itens e usuários do setor ficam sem setor (itens vão para o padrão; usuários passam a ver tudo)
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- atribui itens do cardápio a setores: [{"id":"item","setor":"uuid" | null}]
+create or replace function admin_setor_itens(p_token uuid, p_atribuicoes jsonb) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes; a jsonb; v_setor uuid; v_n int := 0;
+begin
+  s := _sessao(p_token, array['admin']);
+  if p_atribuicoes is null or jsonb_typeof(p_atribuicoes) <> 'array' then raise exception 'Dados inválidos'; end if;
+  for a in select * from jsonb_array_elements(p_atribuicoes) loop
+    v_setor := nullif(a->>'setor', '')::uuid;
+    if v_setor is not null and not exists (select 1 from setores where id = v_setor and restaurante_id = s.restaurante_id) then
+      raise exception 'Setor não encontrado';
+    end if;
+    update cardapio set setor_id = v_setor where restaurante_id = s.restaurante_id and id = a->>'id';
+    v_n := v_n + 1;
+  end loop;
+  return jsonb_build_object('ok', true, 'itens', v_n);
+end $$;
+
+-- define o setor de um usuário de KDS (papel "cozinha"); para os outros papéis o setor é limpo
+create or replace function admin_usuario_setor(p_token uuid, p_login text, p_setor uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['admin']);
+  if p_setor is not null and not exists (select 1 from setores where id = p_setor and restaurante_id = s.restaurante_id) then
+    raise exception 'Setor não encontrado';
+  end if;
+  update usuarios set setor_id = case when papel = 'cozinha' then p_setor else null end
+   where restaurante_id = s.restaurante_id and login = lower(trim(coalesce(p_login, '')));
+  if not found then raise exception 'Usuário não encontrado'; end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- ---------- mais pedidos e sugestões (público, só números agregados) ----------
+create or replace function _calc_populares(p_rest uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_total int; v_qtd jsonb; v_juntos jsonb; v_ad jsonb;
+begin
+  select coalesce(sum(i.qtd), 0) into v_total
+    from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+   where m.restaurante_id = p_rest and p.status <> 'cancelado' and p.criado_em > now() - interval '30 days';
+  if v_total < 30 then   -- pouco histórico: não inventa destaque
+    return jsonb_build_object('total', v_total, 'qtd', '{}'::jsonb, 'juntos', '{}'::jsonb, 'adicionais', '{}'::jsonb);
+  end if;
+  with base as (
+    select i.item_id, i.qtd, i.adicionais, p.comanda_id
+      from pedido_itens i join pedidos p on p.id = i.pedido_id join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id
+     where m.restaurante_id = p_rest and p.status <> 'cancelado' and p.criado_em > now() - interval '30 days'),
+  q as (select item_id, sum(qtd)::int as n from base group by item_id order by 2 desc limit 80),
+  pr as (select x.item_id as a, y.item_id as b, count(distinct x.comanda_id) as cnt
+           from base x join base y on y.comanda_id = x.comanda_id and y.item_id <> x.item_id
+          group by x.item_id, y.item_id having count(distinct x.comanda_id) >= 3),
+  rk as (select a, b, cnt, row_number() over (partition by a order by cnt desc, b) as rn from pr),
+  j as (select a, jsonb_agg(b order by cnt desc, b) as arr from rk where rn <= 3 group by a),
+  ad as (select t.item_id, (array_agg(t.lbl order by t.cnt desc, t.lbl))[1] as top
+           from (select b.item_id, e->>'l' as lbl, count(*) as cnt
+                   from base b cross join lateral jsonb_array_elements(b.adicionais) e group by b.item_id, e->>'l') t
+          group by t.item_id)
+  select (select coalesce(jsonb_object_agg(item_id, n), '{}'::jsonb) from q),
+         (select coalesce(jsonb_object_agg(a, arr), '{}'::jsonb) from j),
+         (select coalesce(jsonb_object_agg(item_id, top), '{}'::jsonb) from ad)
+    into v_qtd, v_juntos, v_ad;
+  return jsonb_build_object('total', v_total, 'qtd', v_qtd, 'juntos', v_juntos, 'adicionais', v_ad);
+end $$;
+
+create or replace function publico_populares(p_slug text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare r restaurantes; v jsonb;
+begin
+  select * into r from restaurantes where slug = lower(coalesce(p_slug, '')) and ativo;
+  if not found then return '{}'::jsonb; end if;
+  if r.populares is not null and r.populares_em > now() - interval '1 hour' then return r.populares; end if;
+  v := _calc_populares(r.id);
+  update restaurantes set populares = v, populares_em = now() where id = r.id;
+  return v;
 end $$;
 
 -- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
@@ -1156,7 +1306,7 @@ grant execute on function
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
   admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), _foto_ok(text),
-  publico_chamar_garcom(uuid), garcom_mesas(uuid), garcom_mesa(uuid, uuid), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
+  publico_chamar_garcom(uuid), publico_populares(text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid), garcom_mesa(uuid, uuid), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
 to anon, authenticated;
 
 grant execute on function

@@ -100,8 +100,9 @@
   async function menuPage(slug, codigo) {
     useCss(null); document.title = BRAND.name; const t0 = Date.now();
     // abertura: logo + "Uma experiência Menu Azul" + assinatura do desenvolvedor por 2 s (o cardápio carrega por baixo)
-    root.replaceChildren(h('div', { class: 'center splash' }, h('div', { class: 'stack wide' }, h('span', { class: 'sp-kick' }, 'Uma experiência'), h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }), h('div', { class: 'sp-bar' })), creditEl()));
-    let r;
+    root.replaceChildren(h('div', { class: 'center splash' }, h('div', { class: 'stack wide' }, h('span', { class: 'sp-kick' }, 'Uma experiência'), h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }),
+      h('div', { class: 'sp-dev' }, h('span', {}, 'Desenvolvido por'), h('img', { src: '/brand/igorcabral-claro.png', alt: 'igor cabral. design & web' })), h('div', { class: 'sp-bar' }))));
+    let r; const popP = rpc('publico_populares', { p_slug: slug }).catch(() => null); // mais pedidos (cache de 1 h no servidor)
     try { r = await rpc('publico_cardapio', { p_slug: slug }); } catch (e) {
       if (/restaurante_inexistente/.test(e.message)) return msgPage('Restaurante não encontrado', 'Confira o endereço ou o QR Code.');
       if (/restaurante_bloqueado/.test(e.message)) return msgPage('Cardápio indisponível', 'Este serviço está temporariamente indisponível.');
@@ -112,7 +113,8 @@
     (model.categories || []).forEach(c => (c.items || []).forEach(i => { if (esg.has(i.id)) i.soldOut = true; }));
     if (codigo) { model.options = Object.assign({}, model.options, { cartEnabled: true }); }
     const resto = 2000 - (Date.now() - t0); if (resto > 0) await new Promise(ok => setTimeout(ok, resto));
-    const html = MenuGen.buildSite(model, codigo ? { mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : {});
+    const populares = await popP;
+    const html = MenuGen.buildSite(model, codigo ? { populares, mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : { populares });
     document.open(); document.write(html); document.close();
   }
 
@@ -159,7 +161,7 @@
     const call = (n, a) => rpc(n, Object.assign({ p_token: sess.token }, a || {})).catch(e => { if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) expirou(); throw e; });
     const kcfg = { api: rpc, token: sess.token, nome: info.nome, expired: expirou, logout: () => sair() };
     const admin = sess.papel === 'admin';
-    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'garcom', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel];
+    const TELAS = admin ? ['mesas', 'caixa', 'cozinha', 'garcom', 'setores', 'equipe', 'esgotados', 'relatorios', 'editor', 'config'] : [sess.papel];
 
     let seq = 0;
     async function show() {
@@ -177,13 +179,13 @@
         return;
       }
       useCss(null);
-      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['relatorios', 'Relatórios'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
+      const nav = h('nav', { class: 'nav' }, [['mesas', 'Mesas e QR'], ['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['setores', 'Setores'], ['equipe', 'Equipe'], ['esgotados', 'Esgotados'], ['relatorios', 'Relatórios'], ['editor', 'Editor de cardápio'], ['config', 'Configurações']]
         .map(([k, l]) => h('a', { href: '#/' + k, class: k === t ? 'on' : '' }, l)));
       const body = h('div', { class: t === 'editor' ? 'edwrap' : 'main' });
       const topEl = h('div', { class: 'top' }, h('img', { class: 'sym', src: BRAND.symbol, alt: BRAND.name }), h('b', {}, info.nome), nav, h('span', { class: 'sp' }), admin && verEl(), h('span', { class: 'mut' }, sess.usuario.nome), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => sair() }, 'Sair'));
       root.replaceChildren(...[topEl, body, t !== 'editor' && footEl()].filter(Boolean)); // (o DOM transformaria false em texto)
       if (t === 'editor') topEl.addEventListener('click', e => guardaEditor(e), true); // guardaEditor é definido depois, por pEditor
-      ({ mesas: pMesas, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, relatorios: pRelatorios, editor: pEditor }[t])(body, call, info, sess);
+      ({ mesas: pMesas, setores: pSetores, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, relatorios: pRelatorios, editor: pEditor }[t])(body, call, info, sess);
     }
     window.onhashchange = show; show();
   }
@@ -215,29 +217,35 @@
   }
 
   /* ----- painel: equipe (reutilizado pelo /admin da plataforma) ----- */
-  function equipeUI(listFn, saveFn) {
+  function equipeUI(listFn, saveFn, kds) { // kds (opcional): { setores(), setSetor(login, setorId) } — setor de cada usuário de KDS
     const box = h('div', { class: 'sec' });
     const draw = async () => {
-      let us; try { us = await listFn(); } catch (e) { return toast(e.message); }
+      let us, sts = []; try { us = await listFn(); if (kds) sts = await kds.setores(); } catch (e) { return toast(e.message); }
       const login = h('input', { id: 'u-login', placeholder: 'login (minúsculas)', autocapitalize: 'none' }), nome = h('input', { id: 'u-nome', placeholder: 'Nome' }), senha = h('input', { id: 'u-senha', type: 'text', placeholder: 'Senha (6+)' });
-      const papel = h('select', { id: 'u-papel' }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v }, l)));
+      const setorNovo = h('select', { id: 'u-setor' }, [h('option', { value: '' }, 'Todos os setores')].concat(sts.map(x => h('option', { value: x.id }, x.nome))));
+      const papel = h('select', { id: 'u-papel' }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha / KDS'], ['garcom', 'Garçom'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v }, l)));
       const save = async (u, patch, ok) => { try { await saveFn(Object.assign({ p_id: u.id, p_login: '', p_nome: u.nome, p_papel: u.papel, p_senha: '', p_ativo: u.ativo }, patch)); if (ok) toast(ok); draw(); } catch (e) { toast(e.message); draw(); } };
       box.replaceChildren(h('h2', {}, 'Equipe'),
         ...us.map(u => {
-          const pp = h('select', { onchange: () => save(u, { p_papel: pp.value }) }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha'], ['garcom', 'Garçom'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: v === u.papel }, l)));
+          const pp = h('select', { onchange: () => save(u, { p_papel: pp.value }) }, [['caixa', 'Caixa'], ['cozinha', 'Cozinha / KDS'], ['garcom', 'Garçom'], ['admin', 'Administrador']].map(([v, l]) => h('option', { value: v, selected: v === u.papel }, l)));
           const at = h('input', { type: 'checkbox', checked: u.ativo, onchange: () => save(u, { p_ativo: at.checked }) });
-          return h('div', { class: 'line', 'data-login': u.login }, h('span', { class: 'g' }, h('b', {}, u.nome), ' ', h('span', { class: 'mut' }, '@' + u.login)), pp, h('label', { class: 'row' }, at, 'ativo'),
+          const ss = kds && sts.length && u.papel === 'cozinha' ? h('select', { class: 'u-setor', title: 'Setor deste KDS', onchange: async () => { try { await kds.setSetor(u.login, ss.value || null); toast('Setor salvo'); } catch (e) { toast(e.message); } } }, [h('option', { value: '' }, 'Todos os setores')].concat(sts.map(x => h('option', { value: x.id, selected: x.id === u.setor_id }, x.nome)))) : null;
+          return h('div', { class: 'line', 'data-login': u.login }, h('span', { class: 'g' }, h('b', {}, u.nome), ' ', h('span', { class: 'mut' }, '@' + u.login)), pp, ss, h('label', { class: 'row' }, at, 'ativo'),
             h('button', { class: 'btn sec sm', onclick: () => { const s = prompt('Nova senha para ' + u.nome + ' (6 a 72 caracteres):'); if (s) save(u, { p_senha: s }, 'Senha alterada'); } }, 'Nova senha'));
         }),
         h('h2', { style: 'margin-top:8px' }, 'Novo usuário'),
-        h('div', { class: 'grid3' }, field('Login', login), field('Nome', nome), field('Papel', papel), field('Senha', senha)),
+        h('div', { class: 'grid3' }, field('Login', login), field('Nome', nome), field('Papel', papel), field('Senha', senha), kds && sts.length ? field('Setor (só para Cozinha / KDS)', setorNovo) : null),
         h('div', {}, h('button', { class: 'btn', id: 'u-add', onclick: async () => {
-          try { await saveFn({ p_id: null, p_login: login.value, p_nome: nome.value, p_papel: papel.value, p_senha: senha.value, p_ativo: true }); toast('Usuário criado'); draw(); } catch (e) { toast(e.message); }
+          try {
+            await saveFn({ p_id: null, p_login: login.value, p_nome: nome.value, p_papel: papel.value, p_senha: senha.value, p_ativo: true });
+            if (kds && papel.value === 'cozinha' && setorNovo.value) await kds.setSetor(login.value, setorNovo.value);
+            toast('Usuário criado'); draw();
+          } catch (e) { toast(e.message); }
         } }, 'Criar usuário')));
     };
     draw(); return box;
   }
-  function pEquipe(box, call) { box.replaceChildren(equipeUI(() => call('admin_usuarios'), a => call('admin_usuario_salvar', a))); }
+  function pEquipe(box, call) { box.replaceChildren(equipeUI(() => call('admin_usuarios'), a => call('admin_usuario_salvar', a), { setores: () => call('admin_setores'), setSetor: (login, setor) => call('admin_usuario_setor', { p_login: login, p_setor: setor }) })); }
 
   /* ----- painel: configurações ----- */
   async function pConfig(box, call, info) {
@@ -254,6 +262,43 @@
         } }, 'Salvar'))),
       h('div', { class: 'sec' }, h('h2', {}, 'Endereços'), link('Entrada da equipe', '/' + info.slug), link('Cardápio público (sem pedido por mesa)', '/' + info.slug + '/menu'),
         h('p', { class: 'mut' }, 'Cardápio publicado em: ' + fmtDate(c.publicado_em) + '. Para alterar itens e preços, fale com o suporte.')));
+  }
+
+  /* ----- painel: setores de KDS (cozinha, bar...) e para onde vai cada item ----- */
+  async function pSetores(box, call) {
+    let sts, its, md;
+    try { [sts, its, md] = await Promise.all([call('admin_setores'), call('admin_itens'), call('admin_cardapio_get')]); } catch (e) { return toast(e.message); }
+    const again = () => pSetores(box, call), padrao = sts.find(x => x.padrao);
+    const nome = h('input', { id: 'st-nome', placeholder: 'Nome do setor (ex.: Bar)' });
+    const criar = async n => { try { await call('admin_setor_salvar', { p_id: null, p_nome: n }); } catch (e) { toast(e.message); throw e; } };
+    const linhas = sts.map(x => {
+      const nm = h('input', { value: x.nome, 'aria-label': 'Nome do setor' });
+      return h('div', { class: 'line', 'data-setor': x.nome }, nm,
+        x.padrao ? h('span', { class: 'tag' }, 'padrão') : h('button', { class: 'btn sec sm', type: 'button', onclick: async () => { try { await call('admin_setor_padrao', { p_id: x.id }); again(); } catch (e) { toast(e.message); } } }, 'Tornar padrão'),
+        h('span', { class: 'mut g' }, x.itens + ' itens · ' + x.usuarios + ' usuários'),
+        h('button', { class: 'btn sec sm', type: 'button', onclick: async () => { try { await call('admin_setor_salvar', { p_id: x.id, p_nome: nm.value }); toast('Salvo'); again(); } catch (e) { toast(e.message); } } }, 'Renomear'),
+        h('button', { class: 'btn dg sm', type: 'button', onclick: async () => { if (!confirm('Excluir o setor "' + x.nome + '"? Os itens voltam para o setor padrão.')) return; try { await call('admin_setor_excluir', { p_id: x.id }); again(); } catch (e) { toast(e.message); } } }, 'Excluir'));
+    });
+    const cats = (md.cardapio && md.cardapio.categories) || [], catDe = {};
+    cats.forEach(c => (c.items || []).forEach(i => { catDe[i.id] = c.name; }));
+    const grupos = new Map(); cats.forEach(c => grupos.set(c.name, []));
+    its.forEach(i => { const k = catDe[i.id] || 'Outros'; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(i); });
+    const opcoes = sel => [h('option', { value: '' }, 'Padrão' + (padrao ? ' (' + padrao.nome + ')' : ''))].concat(sts.map(x => h('option', { value: x.id, selected: x.id === sel }, x.nome)));
+    const atribuir = async lista => { try { await call('admin_setor_itens', { p_atribuicoes: lista }); toast('Salvo'); } catch (e) { toast(e.message); again(); } };
+    const blocos = [...grupos].filter(([, l]) => l.length).map(([cat, l]) => {
+      const bulk = h('select', { class: 'st-bulk', 'aria-label': 'Categoria inteira', onchange: async () => { if (bulk.value === '-') return; await atribuir(l.map(i => ({ id: i.id, setor: bulk.value || null }))); again(); } }, [h('option', { value: '-' }, 'Categoria inteira →')].concat(opcoes('-')));
+      return h('div', { class: 'stcat' }, h('div', { class: 'row sb' }, h('b', {}, cat), bulk),
+        l.map(i => { const sel = h('select', { class: 'st-item', 'data-item': i.id, onchange: () => atribuir([{ id: i.id, setor: sel.value || null }]) }, opcoes(i.setor_id)); return h('div', { class: 'line' }, h('span', { class: 'g' }, i.nome), sel); }));
+    });
+    box.replaceChildren(...[
+      h('div', { class: 'sec' }, h('h2', {}, 'Setores de KDS'),
+        h('p', { class: 'mut' }, 'Cada setor tem a sua tela de pedidos: a Cozinha vê só os pratos e o Bar só as bebidas, por exemplo. Um pedido com itens de setores diferentes é dividido automaticamente, e cada setor vê só a sua parte.'),
+        sts.length ? linhas : h('p', { class: 'mut' }, 'Nenhum setor ainda: todos os pedidos vão para uma única tela de cozinha.'),
+        h('div', { class: 'row' }, nome, h('button', { class: 'btn', id: 'st-add', type: 'button', onclick: async () => { try { await criar(nome.value); again(); } catch (e) { /* já avisou */ } } }, 'Criar setor'),
+          sts.length ? null : h('button', { class: 'btn sec', id: 'st-rapido', type: 'button', onclick: async () => { try { await criar('Cozinha'); await criar('Bar'); again(); } catch (e) { /* já avisou */ } } }, 'Criar "Cozinha" e "Bar"')),
+        h('p', { class: 'mut' }, 'Depois, crie os usuários de cada KDS na aba Equipe (papel "Cozinha / KDS") e escolha o setor dele.')),
+      sts.length ? h('div', { class: 'sec' }, h('h2', {}, 'Para onde vai cada item'),
+        its.length ? blocos : h('p', { class: 'mut' }, 'Publique o cardápio no editor para escolher o setor de cada item. Itens novos vão para o setor padrão.')) : null].filter(Boolean));
   }
 
   /* ----- painel: itens esgotados ----- */
@@ -299,6 +344,7 @@
           kpi('Pedidos', num(a.pedidos), delta(a.pedidos, b.pedidos)),
           kpi('Permanência média', a.permanencia_min == null ? '—' : Math.round(a.permanencia_min) + ' min', delta(a.permanencia_min, b.permanencia_min, true)),
           kpi('Giro por mesa/dia', giro ? giro.toFixed(1).replace('.', ',') : '—', h('small', { class: 'dl' }, num(r.mesas_ativas) + ' mesas ativas')),
+          kpi('Vendas por sugestão', brl(a.sug_receita), h('small', { class: 'dl' }, num(a.sug_itens) + ' itens vindos do carrinho')),
           kpi('Preparo médio', a.preparo_min == null ? '—' : Number(a.preparo_min).toFixed(0) + ' min', a.preparo_min == null ? h('small', { class: 'dl' }, 'passa a aparecer com os novos pedidos') : delta(a.preparo_min, b.preparo_min, true))),
         h('h3', {}, 'Horário de pico' + (a.pedidos ? ' · ' + String(pico).padStart(2, '0') + 'h' : '')), h('div', { class: 'hours' }, r.por_hora.map((v, i) => h('div', { class: 'hc', title: String(i).padStart(2, '0') + 'h: ' + v + ' pedidos' }, h('i', { style: 'height:' + (v / Math.max(1, ...r.por_hora) * 100) + '%' }), h('span', {}, i % 3 === 0 ? i : '')))),
         h('div', { class: 'cols' },
@@ -331,13 +377,15 @@
     html = html.replace('<head>', () => '<head><script>window.MA_HOST=' + JSON.stringify(host).replace(/</g, '\\u003c') + '<\/script>');
     const ifr = h('iframe', { title: 'Editor de cardápio' });
     ifr.srcdoc = html; box.replaceChildren(ifr);
+    const fit = () => { const t = document.querySelector('.top'); if (t) ifr.style.height = 'calc(100dvh - ' + t.offsetHeight + 'px)'; }; // a barra pode quebrar em 2 linhas
+    fit(); window.addEventListener('resize', fit);
     const sujo = () => { try { return !!ifr.contentWindow.GC.hostDirty(); } catch (e) { return false; } };
     guardaEditor = e => { // alterações não publicadas: pergunta antes de sair
       const a = e.target.closest && e.target.closest('a,button'); if (!a || a.getAttribute('href') === '#/editor' || !sujo()) return;
       if (!confirm('Você tem alterações no cardápio que ainda NÃO foram publicadas.\n\nElas ficam salvas neste navegador, mas os clientes só verão depois de clicar em "Salvar e publicar".\n\nSair mesmo assim?')) { e.preventDefault(); e.stopPropagation(); }
     };
     window.onbeforeunload = () => sujo() ? 'Há alterações não publicadas.' : undefined;
-    current = { stop() { window.onbeforeunload = null; guardaEditor = () => {}; // grava o que estiver pendente no editor antes de removê-lo (no máximo 3 s de espera)
+    current = { stop() { window.onbeforeunload = null; guardaEditor = () => {}; window.removeEventListener('resize', fit); // grava o que estiver pendente no editor antes de removê-lo (no máximo 3 s de espera)
       const w = ifr.contentWindow, save = w && w.GC && w.GC.saveNow ? Promise.resolve(w.GC.saveNow()).catch(() => {}) : Promise.resolve();
       return Promise.race([save, new Promise(r => setTimeout(r, 3000))]);
     } };

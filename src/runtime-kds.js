@@ -79,7 +79,7 @@ function kdsRuntime(app, CFG) {
   function esc(x) { return String(x == null ? '' : x).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function ticketHtml(p) {
     var t = new Date(p.criado_em), hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':' + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
-    var h = '<div class="c big">MESA ' + esc(p.mesa) + '</div><div class="c">Pedido #' + p.numero + ' · ' + hm + '</div>' + (p.cliente ? '<div class="c">' + esc(p.cliente) + '</div>' : '') + '<hr>';
+    var h = (p.setor ? '<div class="c">' + esc(String(p.setor).toUpperCase()) + '</div>' : '') + '<div class="c big">MESA ' + esc(p.mesa) + '</div><div class="c">Pedido #' + p.numero + ' · ' + hm + '</div>' + (p.cliente ? '<div class="c">' + esc(p.cliente) + '</div>' : '') + '<hr>';
     p.itens.forEach(function (i) {
       h += '<div class="it"><b>' + i.qtd + '×</b> ' + esc(i.nome + (i.variante ? ' · ' + i.variante : '')) + '</div>';
       (i.adicionais || []).forEach(function (a) { h += '<div class="ad">+ ' + esc(a.l) + '</div>'; });
@@ -129,7 +129,7 @@ function kdsRuntime(app, CFG) {
     });
     var nx = NEXT[p.status], pv = PREV[p.status];
     return el('div', { class: cls, 'data-id': p.id, style: '--c:' + color }, [
-      el('div', { class: 'ch' }, [el('span', { class: 'mesa', text: 'Mesa ' + p.mesa }), el('span', { class: 'num', text: '#' + p.numero }), el('span', { class: 'tm', 'data-t': p.id, text: '⏱ ' + fmt(a) })]),
+      el('div', { class: 'ch' }, [el('span', { class: 'mesa', text: 'Mesa ' + p.mesa }), el('span', { class: 'num', text: '#' + p.numero }), (!S.setor && S.setores > 1 && p.setor) ? el('span', { class: 'tm', text: p.setor }) : null, el('span', { class: 'tm', 'data-t': p.id, text: '⏱ ' + fmt(a) })]),
       p.cliente ? el('div', { class: 'who', text: 'Pedido de ' + p.cliente }) : null,
       el('div', { class: 'its' }, items),
       p.obs ? el('div', { class: 'pobs', text: '📝 ' + p.obs }) : null,
@@ -146,7 +146,7 @@ function kdsRuntime(app, CFG) {
     var snd = sndEl = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sndLabel(), onclick: function () {
       sound = !sound; ls('gc-kds-sound', sound ? '1' : '0'); if (sound) { audio(); beep(); } snd.textContent = sndLabel();
     } });
-    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '👨‍🍳 Cozinha · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), prnEl = el('button', { class: 'btn sec sm', type: 'button', id: 'prn', title: 'Imprime cada pedido novo (bobina 80 mm). Para imprimir sem a janela de confirmação, abra o navegador com --kiosk-printing.', text: prnLabel(), onclick: function () {
+    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: (S.setor && /bar|bebida|drink/i.test(S.setor.nome) ? '🍹 ' : '👨‍🍳 ') + (S.setor ? S.setor.nome : 'Cozinha') + ' · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), prnEl = el('button', { class: 'btn sec sm', type: 'button', id: 'prn', title: 'Imprime cada pedido novo (bobina 80 mm). Para imprimir sem a janela de confirmação, abra o navegador com --kiosk-printing.', text: prnLabel(), onclick: function () {
       printOn = !printOn; ls('gc-kds-print', printOn ? '1' : '0'); if (printOn) markPrinted(S.pedidos.map(function (x) { return x.id; })); prnEl.textContent = prnLabel();
     } }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
     var cols = COLS.map(function (c) {
@@ -158,7 +158,7 @@ function kdsRuntime(app, CFG) {
     });
     app.appendChild(el('main', { class: 'board' }, cols));
     var n = S.pedidos.filter(function (p) { return p.status === 'novo'; }).length;
-    d.title = (n ? '(' + n + ') ' : '') + 'Cozinha — ' + CFG.nome;
+    d.title = (n ? '(' + n + ') ' : '') + (S.setor ? S.setor.nome : 'Cozinha') + ' — ' + CFG.nome;
   }
   function tickTimes() {
     [].forEach.call(d.querySelectorAll('[data-t]'), function (e) {
@@ -190,8 +190,8 @@ function kdsRuntime(app, CFG) {
       S.known = ids;
       var novos = r.pedidos.filter(function (p) { return p.status === 'novo'; }).length;
       if (novos && sound && Date.now() - (S.lastBeep || 0) > 30000) beep();
-      var sig = JSON.stringify(r.pedidos);
-      if (sig !== S.sig || wasOff) { S.sig = sig; S.pedidos = r.pedidos; board(); }
+      var sig = JSON.stringify([r.setor, r.setores, r.pedidos]);
+      if (sig !== S.sig || wasOff) { S.sig = sig; S.pedidos = r.pedidos; S.setor = r.setor; S.setores = r.setores; board(); }
     }, function (e) {
       if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) { CFG.expired(); return; }
       if (S.online) { S.online = false; if (connEl) { connEl.className = 'dot off'; connEl.title = 'Sem conexão'; } }

@@ -215,6 +215,51 @@ console.log('6c) garçom');
   await good('admin_config_set', { p_token: tokA, p_taxa: 10, p_auto: false });
 }
 
+console.log('6d) setores de KDS, pedidos divididos e sugestões');
+{
+  ok(/sessao_invalida/.test(await bad('admin_setores', { p_token: cxA })), 'caixa não vê setores');
+  await good('admin_setor_salvar', { p_token: tokA, p_id: null, p_nome: 'Cozinha' });
+  await good('admin_setor_salvar', { p_token: tokA, p_id: null, p_nome: 'Bar' });
+  const sA = await good('admin_setores', { p_token: tokA }), coz = sA.find(x => x.nome === 'Cozinha'), bar = sA.find(x => x.nome === 'Bar');
+  ok(sA.length === 2 && coz.padrao && !bar.padrao, 'primeiro setor criado vira o padrão');
+  ok(/Já existe/.test(await bad('admin_setor_salvar', { p_token: tokA, p_id: null, p_nome: 'Bar' })), 'nome de setor repetido recusado');
+  ok((await good('admin_setores', { p_token: tokB })).length === 0, 'setores são por restaurante');
+  ok(/não encontrado/i.test(await bad('admin_setor_itens', { p_token: tokB, p_atribuicoes: [{ id: 'x1', setor: bar.id }] })), 'admin de outro restaurante não usa o setor');
+  await good('admin_setor_itens', { p_token: tokA, p_atribuicoes: [{ id: 'suco', setor: bar.id }] });
+  ok((await good('admin_itens', { p_token: tokA })).find(i => i.id === 'suco').setor_id === bar.id, 'item atribuído ao Bar');
+  await good('admin_usuario_salvar', { p_token: tokA, p_id: null, p_login: 'bar1', p_nome: 'Bar 1', p_papel: 'cozinha', p_senha: 'barbar123', p_ativo: true });
+  await good('admin_usuario_setor', { p_token: tokA, p_login: 'bar1', p_setor: bar.id });
+  ok(/não encontrado/i.test(await bad('admin_usuario_setor', { p_token: tokA, p_login: 'bar1', p_setor: '00000000-0000-0000-0000-000000000000' })), 'setor inexistente recusado');
+  const kdBar = (await login('pizza-boa', 'bar1', 'barbar123')).token, g = (await login('pizza-boa', 'gar1', 'garcom123')).token, mesaS = mesasA[1];
+  ok((await good('admin_usuarios', { p_token: tokA })).find(u => u.login === 'bar1').setor === 'Bar', 'lista da equipe mostra o setor do usuário');
+  const misto = await good('garcom_pedir', { p_token: g, p_mesa: mesaS.id, p_itens: [{ id: 'x1', q: 1 }, { id: 'suco', q: 2, src: 'sugestao' }], p_obs: 'urgente' });
+  ok(misto.pedidos.length === 2 && misto.pedidos.map(x => x.setor).sort().join() === 'Bar,Cozinha', 'pedido com itens de dois setores vira dois pedidos');
+  const kb = await good('kds_listar', { p_token: kdBar }), kc = await good('kds_listar', { p_token: kdA });
+  const meus = p => misto.pedidos.some(x => x.pedido_id === p.id), pb = kb.pedidos.filter(meus);
+  ok(kb.setor.nome === 'Bar' && pb.length === 1 && pb[0].itens.length === 1 && pb[0].itens[0].nome === 'Suco' && pb[0].obs === 'urgente', 'KDS do Bar vê só a parte do Bar');
+  ok(kc.pedidos.filter(meus).length === 2 && kc.setor === null, 'KDS sem setor vê todos os pedidos');
+  ok(/não encontrado/i.test(await bad('pedido_status', { p_token: kdBar, p_pedido: misto.pedidos.find(x => x.setor === 'Cozinha').pedido_id, p_status: 'pronto' })), 'KDS do Bar não mexe no pedido da Cozinha');
+  await good('pedido_status', { p_token: kdBar, p_pedido: pb[0].id, p_status: 'pronto' });
+  ok((await be.query('select status from pedidos where id = $1', [pb[0].id])).rows[0].status === 'pronto', 'KDS do Bar atualiza o seu pedido');
+  const lote = (await be.query('select count(distinct lote)::int n, count(*)::int c from pedidos where id = any($1)', [misto.pedidos.map(x => x.pedido_id)])).rows[0];
+  ok(lote.n === 1 && lote.c === 2, 'os dois pedidos pertencem ao mesmo lote');
+  ok((await be.query('select origem from pedido_itens where pedido_id = $1', [pb[0].id])).rows[0].origem === 'sugestao', 'origem "sugestao" gravada no item');
+  await good('admin_publicar', { p_token: tokA, p_modelo: { name: 'Pizza Boa' }, p_itens: itA });
+  ok((await good('admin_itens', { p_token: tokA })).find(i => i.id === 'suco').setor_id === bar.id, 'republicar o cardápio preserva o setor dos itens');
+  await good('admin_setor_itens', { p_token: tokA, p_atribuicoes: [{ id: 'suco', setor: null }] });
+  const pad = await good('garcom_pedir', { p_token: g, p_mesa: mesaS.id, p_itens: [{ id: 'suco', q: 1 }] });
+  ok(pad.pedidos.length === 1 && pad.pedidos[0].setor === 'Cozinha', 'item sem setor vai para o setor padrão');
+  ok(/outro setor como padrão/.test(await bad('admin_setor_excluir', { p_token: tokA, p_id: coz.id })), 'não exclui o setor padrão enquanto houver outros');
+  await good('admin_setor_padrao', { p_token: tokA, p_id: bar.id });
+  await good('admin_setor_excluir', { p_token: tokA, p_id: coz.id });
+  ok((await good('admin_setores', { p_token: tokA })).length === 1, 'exclui o setor depois de trocar o padrão');
+  const rs = await good('admin_relatorio', { p_token: tokA, p_de: null, p_ate: null });
+  ok(rs.atual.sug_itens >= 2 && rs.atual.sug_receita >= 18, 'relatório mostra as vendas vindas das sugestões');
+  const pop0 = await good('publico_populares', { p_slug: 'pizza-boa' });
+  ok(typeof pop0.qtd === 'object' && (Object.keys(pop0.qtd).length === 0 || pop0.total >= 30), 'populares: sem histórico suficiente não destaca nada');
+  ok(Object.keys(await good('publico_populares', { p_slug: 'nao-existe' })).length === 0, 'restaurante inexistente devolve vazio');
+}
+
 console.log('7) bloqueio de restaurante');
 await good('plataforma_salvar_restaurante', { p_id: B, p_nome: 'Burger', p_slug: 'burger', p_ativo: false, p_motivo: 'Inadimplente' }, dono);
 ok((await be.query('select count(*)::int n from staff_sessoes where restaurante_id = $1', [B])).rows[0].n === 0, 'sessões do restaurante bloqueado foram apagadas');

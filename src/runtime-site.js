@@ -118,6 +118,30 @@ function siteRuntime() {
       save(); bar();
     }
     function fee() { return (!MM && info.type === 'delivery') ? C.fee : 0; }
+    function dedupe() { var out = []; lines.forEach(function (l) { var f = null; out.forEach(function (x) { if (key(x) === key(l)) f = x; }); if (f) f.q += l.q; else out.push(l); }); lines = out; }
+    // sugestões do carrinho: o que mais sai junto com o que já está no pedido (histórico do restaurante), depois os mais pedidos
+    function sugestoes() {
+      var pop = DATA.pop; if (!pop || !lines.length) return [];
+      var no = {}, seen = {}, out = []; lines.forEach(function (l) { no[l.id] = 1; });
+      function push(id) { var it = DATA.items[id]; if (!seen[id] && !no[id] && it && it.v.length <= 1 && unit({ id: id, v: it.v.length ? it.v[0].l : '', a: [] }) != null) { seen[id] = 1; out.push(id); } }
+      lines.forEach(function (l) { ((pop.juntos || {})[l.id] || []).forEach(push); });
+      Object.keys(pop.qtd || {}).sort(function (a, b) { return pop.qtd[b] - pop.qtd[a]; }).forEach(push);
+      return out.slice(0, 3);
+    }
+    function sugBox(onChange) {
+      var box = el('div', { class: 'sug' });
+      box.draw = function () {
+        box.textContent = '';
+        var ids = sugestoes(); if (!ids.length) return;
+        box.appendChild(el('h4', { text: 'Que tal adicionar?' }));
+        box.appendChild(el('div', { class: 'sug-r' }, ids.map(function (id) {
+          var it = DATA.items[id], v = it.v.length ? it.v[0] : null;
+          return el('div', { class: 'sug-i', 'data-sug': id }, [el('b', { text: it.n }), el('span', { text: money(v ? v.p : it.p) }),
+            el('button', { type: 'button', text: '+ Adicionar', onclick: function () { add({ id: id, v: v ? v.l : '', a: [], q: 1, o: '', src: 'sugestao' }); onChange(); } })]);
+        })));
+      };
+      return box;
+    }
 
     /* ----- estado do modo mesa ----- */
     var api = MM ? makeApi(SYS.url, SYS.key) : null;
@@ -221,11 +245,18 @@ function siteRuntime() {
         if (it.v.length > 1 && l.v) det.push(l.v);
         (l.a || []).forEach(function (a) { det.push('+ ' + a); });
         var o = el('input', { type: 'text', placeholder: 'Observação (ex.: sem cebola)' }); o.value = l.o || '';
+        var livres = it.a.filter(function (x) { return (l.a || []).indexOf(x.l) < 0; });
+        var fav = (DATA.pop && DATA.pop.ad && DATA.pop.ad[l.id]) || '';
+        livres.sort(function (x, y) { return (y.l === fav) - (x.l === fav); });
+        var chips = livres.length ? el('div', { class: 'achips' }, livres.slice(0, 2).map(function (x) {
+          return el('button', { type: 'button', 'data-ad': x.l, text: '+ ' + x.l + (x.p ? ' (' + money(x.p) + ')' : ''), onclick: function () { l.a = (l.a || []).concat(x.l); dedupe(); save(); bar(); fillLines(box, onChange); onChange(); } });
+        })) : null;
         o.addEventListener('input', function () { l.o = o.value; save(); });
         function step(n) { l.q += n; if (l.q <= 0) lines.splice(lines.indexOf(l), 1); save(); bar(); fillLines(box, onChange); onChange(); }
         box.appendChild(el('div', { class: 'line' }, [
           el('div', { class: 'line-top' }, [el('span', { text: it.n }), el('span', { text: money(unit(l) * l.q) })]),
           det.length ? el('small', { text: det.join(' · ') }) : null,
+          chips,
           el('div', { class: 'line-bot' }, [o, el('span', { class: 'qty' }, [
             el('button', { type: 'button', 'aria-label': 'Diminuir', text: '−', onclick: function () { step(-1); } }), el('b', { text: String(l.q) }),
             el('button', { type: 'button', 'aria-label': 'Aumentar', text: '+', onclick: function () { step(1); } })])])
@@ -241,6 +272,7 @@ function siteRuntime() {
         sh.appendChild(head('Seu pedido', close));
         var linesBox = el('div'), totals = el('div', { class: 'tot' }), notes = el('div'), err = el('div', { class: 'warn', hidden: true });
         var send = el('button', { class: 'send', type: 'button' }, ['Enviar pedido pelo WhatsApp']);
+        var sug = sugBox(function () { fillLines(linesBox, renderTotals); renderTotals(); });
         var st = status();
         if (st && !st.open) sh.appendChild(el('div', { class: 'warn', text: 'Estamos fechados agora. Você pode enviar o pedido e ele será respondido quando abrirmos.' }));
 
@@ -253,7 +285,7 @@ function siteRuntime() {
           notes.textContent = '';
           var low = C.min > 0 && s < C.min;
           if (low) notes.appendChild(el('div', { class: 'warn', text: 'Pedido mínimo: ' + money(C.min) + ' (faltam ' + money(C.min - s) + ')' }));
-          send.disabled = !lines.length || low;
+          send.disabled = !lines.length || low; sug.draw();
         }
 
         var nameI = bind(el('input', { type: 'text', id: 'cf-name', autocomplete: 'name', placeholder: 'Seu nome' }), 'name');
@@ -276,7 +308,7 @@ function siteRuntime() {
         payI.addEventListener('change', function () { info.pay = payI.value; save(); sync(); });
         var notesI = bind(el('textarea', { id: 'cf-notes', rows: '2', placeholder: 'Algo mais que devemos saber?' }), 'notes');
 
-        sh.appendChild(linesBox);
+        sh.appendChild(linesBox); sh.appendChild(sug);
         sh.appendChild(el('button', { class: 'link', type: 'button', text: 'Adicionar mais itens', onclick: close }));
         sh.appendChild(field('Seu nome', nameI));
         sh.appendChild(el('div', { class: 'fld' }, ['Como você quer receber?', tbox]));
@@ -388,12 +420,13 @@ function siteRuntime() {
         var linesBox = el('div'), totals = el('div', { class: 'tot' }), err = el('div', { class: 'warn', hidden: true });
         var send = el('button', { class: 'send go', id: 'send-kitchen', type: 'button', text: 'Enviar para a cozinha' });
         var notesI = bind(el('textarea', { id: 'cf-notes', rows: '2', placeholder: 'Algo para a cozinha? (opcional)' }), 'notes');
+        var sug = sugBox(function () { fillLines(linesBox, renderTotals); renderTotals(); });
         function renderTotals() {
           totals.textContent = '';
           totals.appendChild(el('div', { class: 'g' }, [el('span', { text: 'Este pedido' }), el('span', { text: money(sub()) })]));
-          send.disabled = !lines.length;
+          send.disabled = !lines.length; sug.draw();
         }
-        sh.appendChild(linesBox);
+        sh.appendChild(linesBox); sh.appendChild(sug);
         sh.appendChild(el('button', { class: 'link', type: 'button', text: 'Adicionar mais itens', onclick: close }));
         sh.appendChild(field('Observações do pedido', notesI));
         sh.appendChild(totals); sh.appendChild(err); sh.appendChild(send);
@@ -401,10 +434,10 @@ function siteRuntime() {
           err.hidden = true; send.disabled = true; send.textContent = 'Enviando…';
           api('publico_pedir', {
             p_cliente_token: S.sess.token, p_obs: info.notes || '',
-            p_itens: lines.map(function (l) { return { id: l.id, v: l.v || '', a: l.a || [], q: l.q, o: l.o || '' }; })
+            p_itens: lines.map(function (l) { return { id: l.id, v: l.v || '', a: l.a || [], q: l.q, o: l.o || '', src: l.src || undefined }; })
           }).then(function (r) {
             lines.length = 0; info.notes = ''; save(); bar(); close();
-            toast('Pedido #' + r.numero + ' enviado para a cozinha! 🍳');
+            toast((r.pedidos && r.pedidos.length > 1 ? 'Pedidos ' + r.pedidos.map(function (x) { return '#' + x.numero + (x.setor ? ' (' + x.setor + ')' : ''); }).join(' e ') + ' enviados! 🍳' : 'Pedido #' + r.numero + ' enviado! 🍳'));
             refresh();
           }, function (e) {
             send.textContent = 'Enviar para a cozinha'; send.disabled = false;
@@ -433,7 +466,7 @@ function siteRuntime() {
           peds.forEach(function (p) {
             var mine = p.cliente_id === est.eu.id;
             box.appendChild(el('div', { class: 'ord' + (p.status === 'cancelado' ? ' cx' : '') }, [
-              el('div', { class: 'ord-top' }, [el('b', { text: '#' + p.numero + ' · ' + (mine ? 'Você' : p.cliente) }), el('span', { class: 'pill ' + p.status, text: LBL[p.status] || p.status })]),
+              el('div', { class: 'ord-top' }, [el('b', { text: '#' + p.numero + (p.setor ? ' · ' + p.setor : '') + ' · ' + (mine ? 'Você' : p.cliente) }), el('span', { class: 'pill ' + p.status, text: LBL[p.status] || p.status })]),
               el('div', { class: 'ord-items' }, p.itens.map(function (i) { return el('div', { class: 'oi' }, [el('span', { text: itemText(i) }), el('span', { text: money(i.preco_unit * i.qtd) })]); })),
               p.obs ? el('small', { text: 'Obs: ' + p.obs }) : null,
               (mine && p.status === 'novo') ? el('button', {

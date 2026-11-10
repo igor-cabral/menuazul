@@ -152,7 +152,7 @@ function garcomRuntime(app, CFG) {
     });
     var ST = { novo: 'Novo', preparando: 'Preparando', pronto: 'Pronto', entregue: 'Entregue' };
     return el('div', { class: 'ped' + (pronto ? ' pronto' : ''), 'data-ped': p.numero }, [
-      el('div', { class: 'hd' }, [el('span', { text: '#' + p.numero }), p.cliente ? el('small', { text: p.cliente }) : null, el('span', { class: 'st', text: ST[p.status] || p.status })]),
+      el('div', { class: 'hd' }, [el('span', { text: '#' + p.numero }), p.cliente ? el('small', { text: p.cliente }) : null, p.setor ? el('small', { text: '· ' + p.setor }) : null, el('span', { class: 'st', text: ST[p.status] || p.status })]),
       el('div', {}, li), p.obs ? el('div', { class: 'li', text: '📝 ' + p.obs }) : null,
       pronto ? el('button', { class: 'btn ok', type: 'button', 'data-entregar': p.numero, text: '✅ Entregue na mesa', onclick: function () {
         api('garcom_entregar', { p_token: token, p_pedido: p.id }).then(function () { toast('Entregue ✓'); drawerLoad(); refresh(); }, function (e) { fail(e); drawerLoad(); });
