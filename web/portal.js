@@ -47,7 +47,8 @@
   const brandEl = () => h('div', { class: 'brand plat' }, h('img', { src: BRAND.logo, alt: BRAND.name }), customLogo && BRAND.name);
   const topBrand = () => h('a', { class: 'tbrand', href: '/', title: BRAND.name }, h('img', { src: BRAND.logoLight, alt: BRAND.name }));
   const creditEl = () => h('a', { class: 'credit', href: 'https://igorcabral.dev.br', target: '_blank', rel: 'noopener', title: 'igor cabral. design & web' }, h('span', {}, 'Desenvolvido por'), h('img', { src: '/brand/igorcabral-claro.png', alt: 'igor cabral. design & web' }));
-  const footEl = () => h('footer', { class: 'foot' }, h('span', { class: 'fb' }, h('img', { src: BRAND.symbol, alt: '' }), BRAND.name + ' · cardápio digital e pedidos por mesa'), creditEl());
+  const footEl = () => h('footer', { class: 'foot' }, h('span', { class: 'fb' }, h('img', { src: BRAND.symbol, alt: '' }), BRAND.name + ' · cardápio digital e pedidos por mesa'),
+    h('span', { class: 'fl' }, h('a', { href: '/termos', target: '_blank', rel: 'noopener' }, 'Termos de Uso'), ' · ', h('a', { href: '/privacidade', target: '_blank', rel: 'noopener' }, 'Política de Privacidade')), creditEl());
   const authWrap = (card, powered) => h('div', { class: 'center' }, h('div', { class: 'stack' }, card, powered && h('div', { class: 'powered' }, 'Plataforma ', h('img', { src: BRAND.logoLight, alt: BRAND.name }))), creditEl());
   function msgPage(title, text) {
     useCss(null); document.title = title + ' — ' + BRAND.name;
@@ -192,7 +193,22 @@
       if (t === 'editor') topEl.addEventListener('click', e => guardaEditor(e), true); // guardaEditor é definido depois, por pEditor
       ({ mesas: pMesas, setores: pSetores, equipe: pEquipe, config: pConfig, esgotados: pEsgotados, relatorios: pRelatorios, editor: pEditor }[t])(body, call, info, sess);
     }
-    (admin ? call('admin_cobranca').then(r => { cobr = r; }).catch(() => {}) : Promise.resolve()).then(() => { window.onhashchange = show; show(); });
+    // o administrador precisa aceitar os termos (e a cada nova versão): a tela fica por cima até o aceite
+    const termosGate = async () => {
+      if (!admin) return;
+      let st; try { st = await call('admin_termos_status'); } catch (e) { return; }
+      if (!st || st.aceito !== false) return;
+      const ck = h('input', { type: 'checkbox', id: 'termos-ck' });
+      const ok = h('button', { class: 'btn', id: 'termos-ok', disabled: true, onclick: async () => { try { await call('admin_termos_aceitar', { p_versao: st.versao }); ov.remove(); } catch (e) { toast(e.message); } } }, 'Continuar');
+      ck.addEventListener('change', () => { ok.disabled = !ck.checked; });
+      const ov = h('div', { class: 'termos-ov', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'tcard' },
+        h('h1', {}, 'Termos de Uso e Privacidade'), h('p', {}, 'Para continuar usando o Menu Azul, leia e aceite os documentos abaixo. O aceite fica registrado com a data.'),
+        h('p', {}, h('a', { href: '/termos', target: '_blank', rel: 'noopener' }, 'Termos de Uso'), ' · ', h('a', { href: '/privacidade', target: '_blank', rel: 'noopener' }, 'Política de Privacidade')),
+        h('label', { class: 'tck' }, ck, ' Li e aceito os Termos de Uso e a Política de Privacidade (versão ' + st.versao + ').'),
+        h('div', { class: 'row' }, ok, h('button', { class: 'btn sec', type: 'button', onclick: () => sair() }, 'Sair'))));
+      document.body.append(ov);
+    };
+    (admin ? call('admin_cobranca').then(r => { cobr = r; }).catch(() => {}) : Promise.resolve()).then(() => { window.onhashchange = show; show(); termosGate(); });
   }
 
   /* ----- painel: mesas e QR ----- */
@@ -423,21 +439,29 @@
       const err = h('div', { class: 'err' }, msg || ''), go = h('button', { class: 'btn', type: 'submit' }, 'Entrar');
       root.replaceChildren(authWrap(h('form', { class: 'card', onsubmit: async e => {
         e.preventDefault(); go.disabled = true; err.textContent = '';
-        try { P = await authReq('password', { email: em.value.trim(), password: pw.value }); lsSet(KEY, P); inicio(); } catch (x) { err.textContent = /Invalid login/i.test(x.message) ? 'E-mail ou senha incorretos' : x.message; go.disabled = false; }
+        const falhas = (lsGet('gc-adm-falhas') || []).filter(t => Date.now() - t < 600000);
+        if (falhas.length >= 5) { err.textContent = 'Muitas tentativas erradas. Tente de novo em ' + Math.max(1, Math.ceil((falhas[0] + 600000 - Date.now()) / 60000)) + ' minuto(s).'; go.disabled = false; return; }
+        try { P = await authReq('password', { email: em.value.trim(), password: pw.value }); lsSet('gc-adm-falhas', null); lsSet(KEY, P); inicio(); } catch (x) {
+          if (/Invalid login/i.test(x.message)) { falhas.push(Date.now()); lsSet('gc-adm-falhas', falhas); err.textContent = falhas.length >= 5 ? 'E-mail ou senha incorretos. Acesso bloqueado por 10 minutos.' : 'E-mail ou senha incorretos. Restam ' + (5 - falhas.length) + ' tentativa(s).'; } else err.textContent = x.message;
+          go.disabled = false; }
       } }, brandEl(), h('p', {}, 'Administração da plataforma'), field('E-mail', em), field('Senha', pw), err, go)));
     }
     async function inicio() {
       try { await call('plataforma_eu'); } catch (e) {
-        if (/sem_permissao/.test(e.message)) { P = null; lsSet(KEY, null); return loginP('Esta conta não é administradora da plataforma.'); }
+        if (/sem_permissao/.test(e.message)) {
+          let v = null; try { v = await call('vendedor_eu'); } catch (x) { /* não é vendedor */ }
+          if (v) return vendedor(v.nome);
+          P = null; lsSet(KEY, null); return loginP('Esta conta não tem acesso à plataforma.');
+        }
         return toast(e.status ? e.message : 'Sem conexão');
       }
       painel();
     }
     let aba = 'restaurantes';
     const admTop = () => h('div', { class: 'top' }, topBrand(), h('b', { class: 'tag-adm' }, 'Administração'),
-      h('nav', { class: 'nav' }, [['restaurantes', 'Restaurantes'], ['cobranca', 'Cobrança'], ['comissoes', 'Comissões']].map(([k, l]) => h('a', { href: '#', class: aba === k ? 'on' : '', 'data-aba': k, onclick: e => { e.preventDefault(); aba = k; painel(); } }, l))),
+      h('nav', { class: 'nav' }, [['restaurantes', 'Restaurantes'], ['cobranca', 'Cobrança'], ['comissoes', 'Comissões'], ['vendedores', 'Vendedores']].map(([k, l]) => h('a', { href: '#', class: aba === k ? 'on' : '', 'data-aba': k, onclick: e => { e.preventDefault(); aba = k; painel(); } }, l))),
       h('span', { class: 'sp' }), verEl(), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair'));
-    function painel() { return aba === 'cobranca' ? pCobranca() : aba === 'comissoes' ? pComissoes() : painelRestaurantes(); }
+    function painel() { return aba === 'cobranca' ? pCobranca() : aba === 'comissoes' ? pComissoes() : aba === 'vendedores' ? pVendedores() : painelRestaurantes(); }
     async function painelRestaurantes() {
       let rs; try { rs = await call('plataforma_restaurantes'); } catch (e) { return toast(e.message); }
       const nome = h('input', { id: 'r-nome', placeholder: 'Pizzaria Boa' }), slug = h('input', { id: 'r-slug', placeholder: 'pizzaria-boa' }), al = h('input', { id: 'r-alogin', placeholder: 'dono' }), an = h('input', { id: 'r-anome', placeholder: 'Nome do responsável' }), as = h('input', { id: 'r-asenha', placeholder: 'Senha inicial (6+)' });
@@ -542,6 +566,49 @@
             h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Pagamentos', 'Recebido', 'Tarifas', 'Base', 'Comissão'].map(x => h('th', {}, x)))),
               h('tbody', {}, ls.map(l => h('tr', {}, h('td', {}, l.nome), h('td', {}, String(l.pagamentos)), h('td', {}, brl(l.bruto)), h('td', {}, brl(l.tarifas)), h('td', {}, brl(l.base)), h('td', {}, h('b', {}, brl(l.comissao)))))))))) : h('p', { class: 'mut' }, 'Nenhuma mensalidade recebida neste mês.'),
           h('p', { class: 'mut' }, 'A comissão é calculada por pagamento: (valor − tarifa) × % do vendedor na data do recebimento. Estornos saem do cálculo.'))), footEl());
+    }
+
+    /* ----- vendedores (acesso só de leitura) ----- */
+    async function pVendedores() {
+      let vs; try { vs = await call('plataforma_vendedores'); } catch (e) { return toast(e.message); }
+      const em = h('input', { id: 'v-email', type: 'email', placeholder: 'vendedor@email.com' }), nm = h('input', { id: 'v-nome', placeholder: 'Nome igual ao campo Vendedor dos restaurantes' });
+      root.replaceChildren(admTop(), h('div', { class: 'main' }, h('div', { class: 'sec' }, h('h2', {}, 'Vendedores (acesso só de leitura)'),
+        h('p', { class: 'mut' }, 'O vendedor entra em /admin com e-mail e senha e vê apenas os restaurantes dele (situação, pedidos, vendas) e as comissões do mês. Não altera nada. Para liberar: 1) crie o usuário no Supabase em Authentication → Users (e-mail e senha); 2) informe aqui o e-mail e o nome do vendedor, exatamente como está no campo "Vendedor" dos restaurantes.'),
+        vs.length ? vs.map(v => h('div', { class: 'line', 'data-vendedor-user': v.email }, h('span', { class: 'g' }, h('b', {}, v.nome), ' ', h('span', { class: 'mut' }, v.email + ' · ' + v.restaurantes + ' restaurantes')),
+          h('button', { class: 'btn dg sm', 'data-acao': 'rm-vend', onclick: async () => { if (!confirm('Remover o acesso de ' + v.nome + '?')) return; try { await call('plataforma_vendedor_excluir', { p_user: v.user_id }); painel(); } catch (e) { toast(e.message); } } }, 'Remover acesso'))) : h('p', { class: 'mut' }, 'Nenhum vendedor com acesso ainda.'),
+        h('div', { class: 'grid3' }, field('E-mail do usuário', em), field('Nome do vendedor', nm)),
+        h('div', {}, h('button', { class: 'btn', id: 'v-add', onclick: async () => { try { await call('plataforma_vendedor_salvar', { p_email: em.value, p_nome: nm.value }); toast('Acesso liberado'); painel(); } catch (e) { toast(e.message); } } }, 'Liberar acesso')))), footEl());
+    }
+    /* ----- painel do vendedor (leitura) ----- */
+    let vaba = 'rest', vmes = hojeISO().slice(0, 7);
+    function vendedor(nome) {
+      const top = () => h('div', { class: 'top' }, topBrand(), h('b', { class: 'tag-adm' }, 'Vendedor · ' + nome),
+        h('nav', { class: 'nav' }, [['rest', 'Meus restaurantes'], ['com', 'Minhas comissões']].map(([k, l]) => h('a', { href: '#', class: vaba === k ? 'on' : '', 'data-vaba': k, onclick: e => { e.preventDefault(); vaba = k; vendedor(nome); } }, l))),
+        h('span', { class: 'sp' }), verEl(), h('button', { class: 'btn sec sm', id: 'sair', onclick: () => { P = null; lsSet(KEY, null); loginP(''); } }, 'Sair'));
+      return vaba === 'com' ? vComissoes(top, nome) : vRestaurantes(top);
+    }
+    async function vRestaurantes(top) {
+      let d; try { d = await call('vendedor_cobranca'); } catch (e) { return toast(e.message); }
+      const rs = d.restaurantes, atraso = rs.filter(r => r.dias > 0 && !['cancelado', 'bloqueado'].includes(r.situacao));
+      const kpi = (t, v, sub) => h('div', { class: 'kpi' }, h('span', { class: 'kt' }, t), h('b', {}, v), h('small', { class: 'dl' }, sub || ''));
+      root.replaceChildren(top(), h('div', { class: 'main' },
+        h('div', { class: 'kpis' }, kpi('Restaurantes', String(rs.length)), kpi('Em atraso', String(atraso.length), atraso.length ? 'vale um contato' : 'tudo em dia'), kpi('Pedidos (30 d)', String(rs.reduce((t, r) => t + Number(r.pedidos_30d), 0)))),
+        h('div', { class: 'sec' }, h('h2', {}, 'Como estão os seus restaurantes'),
+          rs.length ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Situação', 'Mensalidade', 'Vencimento', 'Pedidos 30 d', 'Vendas 30 d', 'Última atividade'].map(x => h('th', {}, x)))),
+            h('tbody', {}, rs.map(r => { const [lb, cl] = SIT[r.situacao] || [r.situacao, 'mut'];
+              return h('tr', { 'data-slug': r.slug }, h('td', {}, h('b', {}, r.nome)), h('td', {}, h('span', { class: 'tag ' + cl }, lb), r.dias > 0 ? h('small', { class: 'mut' }, ' ' + r.dias + ' d') : null), h('td', {}, brl(r.mensalidade)), h('td', {}, fmtD(r.vencimento)), h('td', {}, String(r.pedidos_30d)), h('td', {}, brl(r.vendas_30d)), h('td', {}, fmtDate(r.ultima_atividade))); })))) : h('p', { class: 'mut' }, 'Nenhum restaurante vinculado ao seu nome ainda.'),
+          h('p', { class: 'mut' }, 'Acesso só de leitura.'))), footEl());
+    }
+    async function vComissoes(top, nome) {
+      let d; try { d = await call('vendedor_comissoes', { p_mes: vmes + '-01' }); } catch (e) { return toast(e.message); }
+      const mes = h('input', { id: 'm-mes', type: 'month', value: vmes }), L = d.linhas, soma = k => L.reduce((t, l) => t + Number(l[k]), 0);
+      const kpi = (t, v, sub) => h('div', { class: 'kpi' }, h('span', { class: 'kt' }, t), h('b', {}, v), h('small', { class: 'dl' }, sub || ''));
+      root.replaceChildren(top(), h('div', { class: 'main' }, h('div', { class: 'sec' }, h('h2', {}, 'Minhas comissões'),
+        h('div', { class: 'row' }, mes, h('button', { class: 'btn sm', id: 'm-ver', onclick: () => { if (!mes.value) return; vmes = mes.value; vendedor(nome); } }, 'Ver')),
+        h('div', { class: 'kpis' }, kpi('Recebido dos clientes', brl(soma('bruto')), L.reduce((t, l) => t + Number(l.pagamentos), 0) + ' mensalidades'), kpi('Minha comissão', brl(soma('comissao')), 'paga na última semana do mês')),
+        L.length ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Pagamentos', 'Recebido', 'Base', 'Comissão'].map(x => h('th', {}, x)))),
+          h('tbody', {}, L.map(l => h('tr', {}, h('td', {}, l.nome), h('td', {}, String(l.pagamentos)), h('td', {}, brl(l.bruto)), h('td', {}, brl(l.base)), h('td', {}, h('b', {}, brl(l.comissao)))))))) : h('p', { class: 'mut' }, 'Nenhuma mensalidade recebida neste mês.'),
+        h('p', { class: 'mut' }, 'Comissão = (valor recebido − tarifa) × seu percentual. Estornos saem do cálculo.'))), footEl());
     }
 
     function editar(r) {

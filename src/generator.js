@@ -106,6 +106,17 @@ const MenuGen = (function () {
   const DAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
   const ORDER = [1, 2, 3, 4, 5, 6, 0];
   const defaultSchedule = () => Array.from({ length: 7 }, () => ({ open: false, from: '18:00', to: '23:00' }));
+  /* disponibilidade da categoria por horário: { on, days (0 = domingo; vazio = todos), from, to } — "from" maior que "to" atravessa a meia-noite */
+  function normWin(w) {
+    const hm = /^([01]\d|2[0-3]):[0-5]\d$/;
+    w = w || {};
+    return { on: !!w.on, days: [...new Set((w.days || []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6))].sort(),
+             from: hm.test(w.from) ? w.from : '11:00', to: hm.test(w.to) ? w.to : '15:00' };
+  }
+  const winOf = cat => cat && cat.schedule && cat.schedule.on ? { dias: cat.schedule.days, de: cat.schedule.from, ate: cat.schedule.to } : null;
+  const REVIEW_HOSTS = /(^|\.)(google\.com(\.br)?|g\.page|goo\.gl|g\.co|share\.google)$/i;
+  // só aceita link https de domínios do Google (avaliação / Maps)
+  function safeReview(u) { try { const x = new URL(String(u || '').trim()); return x.protocol === 'https:' && REVIEW_HOSTS.test(x.hostname) ? x.href : ''; } catch (e) { return ''; } }
   function normSchedule(s) {
     return defaultSchedule().map((d, i) => {
       const x = (s && s[i]) || {};
@@ -142,7 +153,7 @@ const MenuGen = (function () {
         showSearch: true, showOpenStatus: true,
         cartEnabled: true, typeDelivery: true, typePickup: true, typeDinein: false,
         deliveryFee: '', minOrder: '', payments: 'Pix, Cartão, Dinheiro',
-        orderButton: true, itemOrderButton: false, platformBrand: true, showPopular: true,
+        orderButton: true, itemOrderButton: false, platformBrand: true, showPopular: true, offHours: 'show', googleReview: '',
         orderMessage: 'Olá! Gostaria de fazer um pedido:',
         notice: '', footerText: '', creditText: '', creditUrl: '',
         seoDescription: '', siteUrl: '', domain: '',
@@ -161,7 +172,7 @@ const MenuGen = (function () {
     o.options.plataforma = { slug: String((src && src.options && src.options.plataforma && src.options.plataforma.slug) || '').trim().toLowerCase() };
     delete o.options.system;
     o.categories = ((src && src.categories) || []).map(c => ({
-      id: c.id || uid(), name: c.name || '', description: c.description || '',
+      id: c.id || uid(), name: c.name || '', description: c.description || '', schedule: normWin(c.schedule),
       items: (c.items || []).map(i => ({
         id: i.id || uid(), name: i.name || '', description: i.description || '', price: i.price == null ? '' : i.price,
         image: i.image || null, featured: !!i.featured, soldOut: !!i.soldOut, hidden: !!i.hidden,
@@ -312,6 +323,10 @@ footer{text-align:center;color:var(--muted);font-size:.82rem;padding:38px 16px 1
 .pw span{font-size:.62rem;letter-spacing:.16em;text-transform:uppercase;font-weight:700;opacity:.85}
 .pw img{height:26px;width:auto;display:block}
 .badge.hot{background:#ff6a1a;color:#fff}
+.pwl{flex-basis:100%;text-align:center;font-size:.68rem;opacity:.8}.pwl a{color:#cfe2ff}
+.rv{margin-bottom:6px}.rv a{color:var(--primary);font-weight:700;text-decoration:none}
+.win-note{display:inline-block;font-size:.82rem;font-weight:700;margin:2px 0 10px;padding:4px 10px;border-radius:99px;background:rgba(128,128,128,.14);color:var(--muted)}
+.cat.off .items{opacity:.55}.cat.off .add{pointer-events:none}
 .sug{margin-top:14px}.sug h4{font-size:.9rem;margin-bottom:8px}
 .sug-r{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
 .sug-i{flex:0 0 auto;min-width:140px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
@@ -340,6 +355,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
 .end-exp{display:inline-flex;flex-direction:column;align-items:center;gap:6px;background:#fff;border-radius:18px;padding:12px 22px;box-shadow:0 6px 20px rgba(0,0,0,.12)}
 .end-exp span{font-size:.68rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#5b6b8a}
 .end-exp img{height:30px;width:auto;display:block}
+.end-rv{display:inline-block;margin-top:18px;padding:12px 22px;border-radius:99px;background:var(--primary);color:var(--on-primary);font-weight:800;text-decoration:none;box-shadow:0 8px 20px rgba(0,0,0,.2)}
 .end-cd{margin-top:18px;font-size:.84rem;color:var(--muted)}
 .end-stay{background:none;border:0;color:var(--primary);font:inherit;font-size:.84rem;font-weight:700;text-decoration:underline;cursor:pointer;padding:6px 10px;margin-bottom:12px}
 .end-bar{height:5px;background:var(--primary);transform-origin:left;animation:endbar 5s linear forwards}
@@ -436,15 +452,16 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     /* dados para o runtime */
     const sumLines = scheduleSummary(c.schedule);
     const hasSched = sumLines.length > 0;
+    const reviewUrl = safeReview(o.googleReview); // link de avaliação do Google (só domínios do Google, https)
     // mais pedidos do restaurante (calculados no servidor; só com histórico suficiente)
     const pop = opts.populares && opts.populares.qtd && Number(opts.populares.total) >= 30 ? opts.populares : null;
     const menuData = {
-      tz: c.tz,
+      tz: c.tz, off: o.offHours === 'hide' ? 'hide' : 'show',
       sched: (hasSched && o.showOpenStatus) ? c.schedule.map(s => ({ o: s.open ? 1 : 0, f: s.from, t: s.to })) : [],
       items: {},
       cart: null,
       pop: pop && cartOn ? { qtd: pop.qtd, juntos: pop.juntos || {}, ad: pop.adicionais || {} } : null,
-      sys: mesa ? { url: String(mesa.url).replace(/\/+$/, ''), key: mesa.key, slug: mesa.slug, codigo: mesa.codigo, nome: d.name || '', logo: logoSrc || '' } : null
+      sys: mesa ? { url: String(mesa.url).replace(/\/+$/, ''), key: mesa.key, slug: mesa.slug, codigo: mesa.codigo, nome: d.name || '', logo: logoSrc || '', review: reviewUrl } : null
     };
     if (cartOn) {
       const types = [];
@@ -485,7 +502,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
         .sort((a, b) => pop.qtd[b.id] - pop.qtd[a.id]).slice(0, 2).forEach(i => hot.add(i.id)));
     }
 
-    const itemHtml = it => {
+    const itemHtml = (it, win) => {
       const vars = it.variants.filter(v => String(v.label).trim() || String(v.price).trim());
       const adds = it.addons.filter(a => String(a.label).trim());
       let priceHtml = '';
@@ -500,7 +517,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
         const bp = parsePrice(it.price);
         if (vars.length ? cv.length > 0 : !isNaN(bp)) {
           menuData.items[it.id] = {
-            n: it.name, p: vars.length ? null : bp, v: cv,
+            n: it.name, p: vars.length ? null : bp, v: cv, w: win || undefined,
             a: adds.map(a => ({ l: String(a.label).trim(), p: nz(parsePrice(a.price)) }))
           };
           btn = '<button type="button" class="add" data-add="' + esc(it.id) + '">+ Adicionar</button>';
@@ -525,14 +542,16 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     const tabsHtml = cats.length > 1
       ? '<nav class="tabs" aria-label="Categorias"><div class="tabs-in">' + cats.map((cat, k) => '<a href="#' + catId(cat, k) + '">' + esc(cat.name) + '</a>').join('') + '</div></nav>' : '';
     const sections = cats.map((cat, k) =>
-      '<section class="cat" id="' + catId(cat, k) + '"><h2>' + esc(cat.name) + '</h2>' +
+      '<section class="cat" id="' + catId(cat, k) + '"' + (winOf(cat) ? ' data-win="' + esc(JSON.stringify(winOf(cat))) + '"' : '') + '><h2>' + esc(cat.name) + '</h2>' +
       (cat.description ? '<p class="cat-desc">' + escBr(cat.description) + '</p>' : '') +
-      '<div class="items">' + cat.items.map(itemHtml).join('') + '</div></section>').join('');
+      '<div class="items">' + cat.items.map(i => itemHtml(i, winOf(cat))).join('') + '</div></section>').join('');
 
     // faixa padrão no fim do cardápio: "Uma experiência Menu Azul" + "Desenvolvido por igor cabral." (desligável em Opções > Rodapé)
     const platformBand = o.platformBrand === false ? '' :
       '<div class="pw"><div><span>Uma experiência</span><a href="https://menuazul.igorcabral.dev.br" target="_blank" rel="noopener"><img src="' + PW_IMG.mz + '" alt="Menu Azul"></a></div>' +
-      '<div><span>Desenvolvido por</span><a href="https://igorcabral.dev.br" target="_blank" rel="noopener"><img src="' + PW_IMG.ig + '" alt="igor cabral. design &amp; web"></a></div></div>';
+      '<div><span>Desenvolvido por</span><a href="https://igorcabral.dev.br" target="_blank" rel="noopener"><img src="' + PW_IMG.ig + '" alt="igor cabral. design &amp; web"></a></div>' +
+      '<div class="pwl"><a href="https://menuazul.igorcabral.dev.br/termos" target="_blank" rel="noopener">Termos de Uso</a> · <a href="https://menuazul.igorcabral.dev.br/privacidade" target="_blank" rel="noopener">Política de Privacidade</a></div></div>';
+    const reviewHtml = reviewUrl ? '<p class="rv"><a href="' + esc(reviewUrl) + '" target="_blank" rel="noopener">⭐ Gostou? Avalie-nos no Google</a></p>' : '';
     const credit = o.creditText
       ? '<p>' + (o.creditUrl ? '<a href="' + esc(o.creditUrl) + '" target="_blank" rel="noopener">' + esc(o.creditText) + '</a>' : esc(o.creditText)) + '</p>' : '';
 
@@ -575,7 +594,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       (o.showSearch && cats.length ? '<div class="search"><input id="q" type="search" placeholder="Buscar no cardápio…" aria-label="Buscar no cardápio" autocomplete="off"></div>' : '') +
       (cats.length ? sections + '<p class="none" id="none" hidden>Nenhum item encontrado.</p>' : '<p class="empty">Cardápio em breve.</p>') +
       '</main>\n' +
-      '<footer>' + (o.footerText ? '<p>' + escBr(o.footerText) + '</p>' : '') + credit + platformBand + '</footer>' +
+      '<footer>' + (o.footerText ? '<p>' + escBr(o.footerText) + '</p>' : '') + reviewHtml + credit + platformBand + '</footer>' +
       ((!cartOn && o.orderButton && wa) ? '<a class="fab" href="' + orderLink(o.orderMessage) + '" target="_blank" rel="noopener">' + ICON.wa + 'Fazer pedido</a>' : '') +
       '<script type="application/json" id="menu-data">' + dataJson + '<\/script>' +
       '<script>' + (mesa ? 'var makeApi=' + makeApi.toString() + ';' : '') + '(' + siteRuntime.toString() + ')();<\/script></body></html>';
@@ -588,13 +607,14 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     const d = normalize(src), out = [];
     d.categories.forEach(c => c.items.forEach(it => {
       if (it.hidden) return;
+      const janela = winOf(c);
       const vs = it.variants.map(v => ({ l: String(v.label).trim() || 'Padrão', p: parsePrice(v.price) })).filter(v => !isNaN(v.p));
       const bp = parsePrice(it.price);
       if (it.variants.length ? !vs.length : isNaN(bp)) return;
       out.push({
         id: it.id, nome: it.name, preco: it.variants.length ? 0 : bp, variantes: vs,
         adicionais: it.addons.map(a => ({ l: String(a.label).trim(), p: nz(parsePrice(a.price)) })).filter(a => a.l),
-        esgotado: !!it.soldOut
+        esgotado: !!it.soldOut, janela
       });
     }));
     return out;
@@ -611,5 +631,5 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       '@media print{.bar{display:none}.c{height:48vh}}</style></head><body><div class="bar"><button onclick="print()">Imprimir</button><span>' + mesas.length + ' QR Code(s)</span></div><div class="g">' + cards + '</div></body></html>';
   }
 
-  return { buildSite, buildQrSheet, systemMenu, normalize, defaults, parseBulk, slugify, parsePrice, fmtPrice, uid, scheduleSummary, FONTS, PRESETS, THEMES, TAGS, TZS };
+  return { buildSite, buildQrSheet, systemMenu, normalize, defaults, parseBulk, slugify, parsePrice, fmtPrice, uid, safeReview, normWin, scheduleSummary, FONTS, PRESETS, THEMES, TAGS, TZS };
 })();

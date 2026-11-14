@@ -237,6 +237,52 @@ begin
   end if;
 end $$;
 
+-- ---------- cardápio por horário ----------
+-- janela = {"dias":[0..6] (0 = domingo; vazio = todos), "de":"HH:MM", "ate":"HH:MM"}; "de" maior que "ate" atravessa a meia-noite.
+alter table cardapio add column if not exists janela jsonb;
+alter table comandas add column if not exists chamados_n int not null default 0;          -- limite de chamados ao garçom
+alter table comandas add column if not exists chamados_desde timestamptz;
+
+create or replace function _na_janela(p_j jsonb, p_fuso text) returns boolean
+language plpgsql stable set search_path = public, pg_temp as $$
+declare v_agora timestamp := now() at time zone coalesce(p_fuso, 'America/Sao_Paulo'); v_t time := v_agora::time;
+  v_dow int := extract(dow from v_agora)::int; v_de time; v_ate time; v_dias jsonb;
+begin
+  if p_j is null or jsonb_typeof(p_j) <> 'object' then return true; end if;
+  v_de := coalesce(nullif(p_j->>'de', ''), '00:00')::time; v_ate := coalesce(nullif(p_j->>'ate', ''), '23:59')::time; v_dias := p_j->'dias';
+  if v_de <= v_ate then
+    return (v_dias is null or jsonb_array_length(v_dias) = 0 or v_dias @> to_jsonb(v_dow)) and v_t >= v_de and v_t <= v_ate;
+  end if;
+  return (v_t >= v_de and (v_dias is null or jsonb_array_length(v_dias) = 0 or v_dias @> to_jsonb(v_dow)))
+      or (v_t <= v_ate and (v_dias is null or jsonb_array_length(v_dias) = 0 or v_dias @> to_jsonb((v_dow + 6) % 7)));
+end $$;
+
+create or replace function _janela_texto(p_j jsonb) returns text
+language sql immutable set search_path = public, pg_temp as $$
+  select 'das ' || coalesce(nullif(p_j->>'de', ''), '00:00') || ' às ' || coalesce(nullif(p_j->>'ate', ''), '23:59')
+         || case when p_j->'dias' is null or jsonb_array_length(p_j->'dias') = 0 then '' else ' (' || (
+              select string_agg((array['dom','seg','ter','qua','qui','sex','sáb'])[d::int + 1], ', ' order by d::int) from jsonb_array_elements_text(p_j->'dias') d) || ')' end
+$$;
+
+-- ---------- vendedor (parceiro comercial): login só de leitura ----------
+create table if not exists plataforma_vendedores (
+  user_id uuid primary key,
+  nome text not null unique,            -- igual ao campo "vendedor" dos restaurantes dele
+  email text,
+  criado_em timestamptz not null default now()
+);
+alter table plataforma_vendedores enable row level security;
+
+-- ---------- termos de uso e política de privacidade ----------
+create or replace function _termos_versao() returns text language sql immutable as $$ select '2026-11-11'::text $$;
+create table if not exists aceites_termos (
+  usuario_id uuid not null references usuarios(id) on delete cascade,
+  versao text not null,
+  aceito_em timestamptz not null default now(),
+  primary key (usuario_id, versao)
+);
+alter table aceites_termos enable row level security;
+
 create or replace function _sessao(p_token uuid, p_papeis text[]) returns staff_sessoes
 language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare s staff_sessoes; v_rest_ativo boolean; v_user_ativo boolean;
@@ -505,12 +551,15 @@ begin
   v_chave := r.id::text || ':' || v_login;
   if (select count(*) from login_falhas where chave = v_chave and em > now() - interval '10 minutes') >= 5
      or (select count(*) from login_falhas where chave like r.id::text || ':%' and em > now() - interval '10 minutes') >= 40 then
-    return jsonb_build_object('ok', false, 'erro', 'Muitas tentativas. Aguarde alguns minutos.');
+    return jsonb_build_object('ok', false, 'bloqueado_tentativas', true, 'erro', 'Muitas tentativas erradas. Tente de novo em ' || greatest(1, ceil(extract(epoch from (
+      coalesce((select min(em) from (select em from login_falhas where chave = v_chave and em > now() - interval '10 minutes' order by em desc limit 5) q), now()) + interval '10 minutes' - now())) / 60)::int) || ' minuto(s).');
   end if;
   select * into u from usuarios where restaurante_id = r.id and login = v_login and ativo;
   if not found or u.senha_hash <> crypt(coalesce(p_senha, ''), u.senha_hash) then
     insert into login_falhas (chave) values (v_chave);
-    return jsonb_build_object('ok', false, 'erro', 'Usuário ou senha incorretos');
+    return jsonb_build_object('ok', false, 'erro', 'Usuário ou senha incorretos. ' ||
+      case when (select count(*) from login_falhas where chave = v_chave and em > now() - interval '10 minutes') >= 5 then 'Acesso bloqueado por 10 minutos.'
+           else 'Restam ' || (5 - (select count(*) from login_falhas where chave = v_chave and em > now() - interval '10 minutes'))::int || ' tentativa(s).' end);
   end if;
   insert into staff_sessoes (usuario_id, restaurante_id, papel, expira_em) values (u.id, r.id, u.papel, v_exp) returning token into v_token;
   return jsonb_build_object('ok', true, 'token', v_token, 'papel', u.papel, 'expira_em', v_exp,
@@ -870,7 +919,7 @@ declare v_slug text := lower(trim(coalesce(p_slug, ''))); v_id uuid;
 begin
   perform _plataforma();
   if v_slug !~ '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])$' then raise exception 'Endereço: 2 a 40 letras minúsculas, números e hífen'; end if;
-  if v_slug = any (array['admin','api','assets','static','login','www','app','cardapio','suporte','config','favicon','robots','sitemap']) then
+  if v_slug = any (array['admin','api','assets','static','login','www','app','cardapio','suporte','config','favicon','robots','sitemap','termos','privacidade']) then
     raise exception 'Este endereço é reservado';
   end if;
   if trim(coalesce(p_nome, '')) = '' then raise exception 'Informe o nome do restaurante'; end if;
@@ -886,7 +935,7 @@ language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_slug text := lower(trim(coalesce(p_slug, '')));
 begin
   perform _plataforma();
-  if v_slug !~ '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])$' or v_slug = any (array['admin','api','assets','static','login','www','app','cardapio','suporte','config','favicon','robots','sitemap']) then
+  if v_slug !~ '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])$' or v_slug = any (array['admin','api','assets','static','login','www','app','cardapio','suporte','config','favicon','robots','sitemap','termos','privacidade']) then
     raise exception 'Endereço inválido ou reservado';
   end if;
   update restaurantes set nome = left(coalesce(nullif(trim(p_nome), ''), nome), 80), slug = v_slug, ativo = coalesce(p_ativo, ativo),
@@ -925,9 +974,9 @@ begin
   if not found then raise exception 'Restaurante não encontrado'; end if;
   v_old := (select coalesce(jsonb_object_agg(id, setor_id), '{}'::jsonb) from cardapio where restaurante_id = p_rest and setor_id is not null);
   delete from cardapio where restaurante_id = p_rest;
-  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado, setor_id)
-  select p_rest, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false), (v_old ->> x.id)::uuid
-  from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean);
+  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado, setor_id, janela)
+  select p_rest, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false), (v_old ->> x.id)::uuid, case when jsonb_typeof(x.janela) = 'object' then x.janela end
+  from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean, janela jsonb);
   get diagnostics v_n = row_count;
   return jsonb_build_object('itens', v_n);
 end $$;
@@ -951,9 +1000,9 @@ begin
   update restaurantes set cardapio = p_modelo, publicado_em = now() where id = s.restaurante_id;
   v_old := (select coalesce(jsonb_object_agg(id, setor_id), '{}'::jsonb) from cardapio where restaurante_id = s.restaurante_id and setor_id is not null);
   delete from cardapio where restaurante_id = s.restaurante_id;
-  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado, setor_id)
-  select s.restaurante_id, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false), (v_old ->> x.id)::uuid
-  from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean);
+  insert into cardapio (restaurante_id, id, nome, preco, variantes, adicionais, esgotado, setor_id, janela)
+  select s.restaurante_id, x.id, x.nome, x.preco, coalesce(x.variantes, '[]'::jsonb), coalesce(x.adicionais, '[]'::jsonb), coalesce(x.esgotado, false), (v_old ->> x.id)::uuid, case when jsonb_typeof(x.janela) = 'object' then x.janela end
+  from jsonb_to_recordset(p_itens) as x(id text, nome text, preco numeric, variantes jsonb, adicionais jsonb, esgotado boolean, janela jsonb);
   get diagnostics v_n = row_count;
   return jsonb_build_object('itens', v_n);
 end $$;
@@ -961,15 +1010,16 @@ end $$;
 -- ---------- garçom: atende as mesas (pedidos, entregas e chamados) ----------
 -- Cria os pedidos de uma comanda aberta (mesma regra de preço/variante/adicional para cliente e garçom).
 -- Itens de setores diferentes (cozinha, bar...) viram um pedido para cada setor, criados juntos (mesmo "lote").
-create or replace function _criar_pedido(p_comanda uuid, p_cliente uuid, p_itens jsonb, p_obs text) returns jsonb
+drop function if exists _criar_pedido(uuid, uuid, jsonb, text);
+create or replace function _criar_pedido(p_comanda uuid, p_cliente uuid, p_itens jsonb, p_obs text, p_staff boolean default false) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
-declare c comandas; v_rest uuid; v_lote uuid := gen_random_uuid(); v_padrao uuid; v_setor uuid; v_key text;
+declare c comandas; v_rest uuid; v_fuso text; v_lote uuid := gen_random_uuid(); v_padrao uuid; v_setor uuid; v_key text;
   v_ped uuid; v_num int; v_map jsonb := '{}'::jsonb; v_lista jsonb := '[]'::jsonb; v_obs text;
   v_it jsonb; v_row cardapio; v_pre numeric; v_var text; v_q int; v_adlist jsonb; v_lbl text; v_found jsonb;
 begin
   select * into c from comandas where id = p_comanda;
   if c.status <> 'aberta' then raise exception 'conta_encerrada'; end if;
-  select m.restaurante_id into v_rest from mesas m where m.id = c.mesa_id;
+  select m.restaurante_id, r.fuso into v_rest, v_fuso from mesas m join restaurantes r on r.id = m.restaurante_id where m.id = c.mesa_id;
   if p_itens is null or jsonb_typeof(p_itens) <> 'array' or jsonb_array_length(p_itens) = 0 then raise exception 'Pedido vazio'; end if;
   if jsonb_array_length(p_itens) > 40 then raise exception 'Pedido muito grande'; end if;
   v_obs := nullif(left(trim(coalesce(p_obs, '')), 200), '');
@@ -981,6 +1031,9 @@ begin
     select * into v_row from cardapio where restaurante_id = v_rest and id = v_it->>'id';
     if not found then raise exception 'Item indisponível. Atualize a página e tente de novo.'; end if;
     if v_row.esgotado then raise exception 'Esgotado: %', v_row.nome; end if;
+    if not p_staff and not _na_janela(v_row.janela, v_fuso) then
+      raise exception 'Fora do horário: % está disponível %', v_row.nome, _janela_texto(v_row.janela);
+    end if;
 
     v_var := coalesce(v_it->>'v', '');
     if jsonb_array_length(v_row.variantes) > 0 then
@@ -1027,8 +1080,12 @@ language plpgsql security definer set search_path = public, pg_temp as $$
 declare cl clientes;
 begin
   cl := _cliente(p_cliente_token);
-  update comandas set chamado_em = coalesce(chamado_em, now()), chamado_por = coalesce(chamado_por, cl.nome)
-   where id = cl.comanda_id and status = 'aberta';
+  update comandas set chamados_n = case when chamados_desde is null or chamados_desde < now() - interval '10 minutes' then 1 else chamados_n + 1 end,
+                      chamados_desde = case when chamados_desde is null or chamados_desde < now() - interval '10 minutes' then now() else chamados_desde end
+   where id = cl.comanda_id and status = 'aberta'
+     and (chamados_desde is null or chamados_desde < now() - interval '10 minutes' or chamados_n < 5);
+  if not found then raise exception 'Muitos chamados seguidos. Aguarde alguns minutos.'; end if;
+  update comandas set chamado_em = coalesce(chamado_em, now()), chamado_por = coalesce(chamado_por, cl.nome) where id = cl.comanda_id and status = 'aberta';
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -1098,7 +1155,7 @@ begin
   v_nome := left('Garçom ' || split_part((select nome from usuarios where id = s.usuario_id), ' ', 1), 40);
   select * into cl from clientes where comanda_id = c.id and nome = v_nome order by criado_em limit 1;
   if not found then insert into clientes (comanda_id, nome) values (c.id, v_nome) returning * into cl; end if;
-  v_res := _criar_pedido(c.id, cl.id, p_itens, p_obs);
+  v_res := _criar_pedido(c.id, cl.id, p_itens, p_obs, true);   -- o garçom pode lançar fora do horário (exceção da cozinha)
   return v_res || jsonb_build_object('comanda_id', c.id);
 end $$;
 
@@ -1355,11 +1412,9 @@ begin
 end $$;
 
 -- ---------- cobrança: dono da plataforma ----------
-create or replace function plataforma_cobranca() returns jsonb
-language plpgsql security definer set search_path = public, pg_temp as $$
-begin
-  perform _plataforma();
-  return jsonb_build_object('agora', now(), 'restaurantes', coalesce((select jsonb_agg(jsonb_build_object(
+create or replace function _cobranca_lista(p_vendedor text) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
     'id', r.id, 'slug', r.slug, 'nome', r.nome, 'ativo', r.ativo, 'criado_em', r.criado_em,
     'mensalidade', r.mensalidade, 'implantacao', r.implantacao, 'implantacao_paga_em', r.implantacao_paga_em,
     'vencimento', r.proximo_vencimento, 'vendedor', r.vendedor, 'comissao_pct', r.comissao_pct, 'cancelado_em', r.cancelado_em,
@@ -1370,8 +1425,16 @@ begin
     'vendas_30d', (select coalesce(sum(g.valor), 0) from pagamentos g join comandas c on c.id = g.comanda_id join mesas m on m.id = c.mesa_id
                     where m.restaurante_id = r.id and g.em > now() - interval '30 days'),
     'ultima_atividade', (select max(p.criado_em) from pedidos p join comandas c on c.id = p.comanda_id join mesas m on m.id = c.mesa_id where m.restaurante_id = r.id)
-  ) order by r.criado_em)
-  from restaurantes r cross join lateral (select _cobranca_estado(r.proximo_vencimento, r.fuso, r.cancelado_em, r.ativo) as e) x), '[]'::jsonb));
+  ) order by r.criado_em), '[]'::jsonb)
+  from restaurantes r cross join lateral (select _cobranca_estado(r.proximo_vencimento, r.fuso, r.cancelado_em, r.ativo) as e) x
+  where p_vendedor is null or lower(coalesce(r.vendedor, '')) = lower(p_vendedor)
+$$;
+
+create or replace function plataforma_cobranca() returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform _plataforma();
+  return jsonb_build_object('agora', now(), 'restaurantes', _cobranca_lista(null));
 end $$;
 
 create or replace function plataforma_cobranca_salvar(p_rest uuid, p_mensalidade numeric, p_implantacao numeric, p_vencimento date,
@@ -1440,21 +1503,110 @@ begin
 end $$;
 
 -- comissões de um mês (por data de recebimento): base = valor - tarifa; comissão = base x % do vendedor
+create or replace function _comissoes_linhas(p_ini date, p_vendedor text) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(l order by l->>'vendedor', l->>'nome'), '[]'::jsonb) from (
+    select jsonb_build_object('restaurante_id', r.id, 'nome', r.nome, 'vendedor', coalesce(r.vendedor, ''),
+             'pagamentos', count(*), 'bruto', sum(g.valor), 'tarifas', sum(g.tarifa), 'base', sum(g.valor - g.tarifa),
+             'comissao', sum(round((g.valor - g.tarifa) * g.comissao_pct / 100, 2))) as l
+      from pagamentos_plano g join restaurantes r on r.id = g.restaurante_id
+     where g.tipo = 'mensalidade' and not g.estornado and g.recebido_em >= p_ini and g.recebido_em < (p_ini + interval '1 month')::date
+       and (p_vendedor is null or lower(coalesce(r.vendedor, '')) = lower(p_vendedor))
+     group by r.id, r.nome, r.vendedor) q
+$$;
+
 create or replace function plataforma_comissoes(p_mes date) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_ini date := date_trunc('month', coalesce(p_mes, current_date))::date;
 begin
   perform _plataforma();
-  return jsonb_build_object('mes', v_ini,
-    'linhas', coalesce((select jsonb_agg(l order by l->>'vendedor', l->>'nome') from (
-      select jsonb_build_object('restaurante_id', r.id, 'nome', r.nome, 'vendedor', coalesce(r.vendedor, ''),
-               'pagamentos', count(*), 'bruto', sum(g.valor), 'tarifas', sum(g.tarifa), 'base', sum(g.valor - g.tarifa),
-               'comissao', sum(round((g.valor - g.tarifa) * g.comissao_pct / 100, 2))) as l
-        from pagamentos_plano g join restaurantes r on r.id = g.restaurante_id
-       where g.tipo = 'mensalidade' and not g.estornado and g.recebido_em >= v_ini and g.recebido_em < (v_ini + interval '1 month')::date
-       group by r.id, r.nome, r.vendedor) q), '[]'::jsonb),
+  return jsonb_build_object('mes', v_ini, 'linhas', _comissoes_linhas(v_ini, null),
     'implantacoes', coalesce((select sum(g.valor - g.tarifa) from pagamentos_plano g
        where g.tipo = 'implantacao' and not g.estornado and g.recebido_em >= v_ini and g.recebido_em < (v_ini + interval '1 month')::date), 0));
+end $$;
+
+-- ---------- vendedor: leitura apenas (só os restaurantes dele; sem a parte do titular) ----------
+create or replace function _vendedor() returns text
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare v_nome text;
+begin
+  select nome into v_nome from plataforma_vendedores where user_id = auth.uid();
+  if v_nome is null then raise exception 'sem_permissao'; end if;
+  return v_nome;
+end $$;
+
+create or replace function vendedor_eu() returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  return jsonb_build_object('nome', _vendedor());
+end $$;
+
+create or replace function vendedor_cobranca() returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v text := _vendedor();
+begin
+  return jsonb_build_object('agora', now(), 'vendedor', v, 'restaurantes', _cobranca_lista(v));
+end $$;
+
+create or replace function vendedor_comissoes(p_mes date) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v text := _vendedor(); v_ini date := date_trunc('month', coalesce(p_mes, current_date))::date;
+begin
+  return jsonb_build_object('mes', v_ini, 'vendedor', v, 'linhas', _comissoes_linhas(v_ini, v));
+end $$;
+
+-- o dono cadastra o acesso do vendedor (o usuário e a senha são criados em Authentication > Users do Supabase)
+create or replace function plataforma_vendedores() returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform _plataforma();
+  return coalesce((select jsonb_agg(jsonb_build_object('user_id', v.user_id, 'nome', v.nome, 'email', v.email,
+            'restaurantes', (select count(*) from restaurantes r where lower(coalesce(r.vendedor, '')) = lower(v.nome))) order by v.nome)
+          from plataforma_vendedores v), '[]'::jsonb);
+end $$;
+
+create or replace function plataforma_vendedor_salvar(p_email text, p_nome text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_id uuid; v_nome text := left(trim(coalesce(p_nome, '')), 60);
+begin
+  perform _plataforma();
+  if v_nome = '' then raise exception 'Informe o nome do vendedor (igual ao campo Vendedor dos restaurantes)'; end if;
+  select id into v_id from auth.users where lower(email) = lower(trim(coalesce(p_email, '')));
+  if v_id is null then raise exception 'Usuário não encontrado. Crie antes em Authentication > Users do Supabase.'; end if;
+  if exists (select 1 from plataforma_admins where user_id = v_id) then raise exception 'Este usuário já é administrador da plataforma'; end if;
+  insert into plataforma_vendedores (user_id, nome, email) values (v_id, v_nome, lower(trim(p_email)))
+  on conflict (user_id) do update set nome = excluded.nome, email = excluded.email;
+  return jsonb_build_object('ok', true);
+exception when unique_violation then
+  raise exception 'Já existe um vendedor com esse nome';
+end $$;
+
+create or replace function plataforma_vendedor_excluir(p_user uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform _plataforma();
+  delete from plataforma_vendedores where user_id = p_user;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- ---------- termos de uso: aceite do administrador do restaurante ----------
+create or replace function admin_termos_status(p_token uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['admin']);
+  return jsonb_build_object('versao', _termos_versao(),
+    'aceito', exists (select 1 from aceites_termos where usuario_id = s.usuario_id and versao = _termos_versao()));
+end $$;
+
+create or replace function admin_termos_aceitar(p_token uuid, p_versao text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['admin']);
+  if p_versao is distinct from _termos_versao() then raise exception 'Os termos foram atualizados. Recarregue a página.'; end if;
+  insert into aceites_termos (usuario_id, versao) values (s.usuario_id, p_versao) on conflict do nothing;
+  return jsonb_build_object('ok', true);
 end $$;
 
 -- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
@@ -1494,7 +1646,7 @@ grant execute on function
   admin_mesas(uuid), admin_criar_mesas(uuid, int), admin_salvar_mesa(uuid, uuid, text, boolean), admin_apagar_mesa(uuid, uuid),
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
-  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), admin_cobranca(uuid), _foto_ok(text),
+  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), admin_cobranca(uuid), admin_termos_status(uuid), admin_termos_aceitar(uuid, text), _foto_ok(text),
   publico_chamar_garcom(uuid), publico_populares(text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid), garcom_mesa(uuid, uuid), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
 to anon, authenticated;
 
@@ -1504,7 +1656,9 @@ grant execute on function
   plataforma_usuario_salvar(uuid, uuid, text, text, text, text, boolean), plataforma_publicar(uuid, jsonb, jsonb),
   plataforma_cobranca(), plataforma_cobranca_salvar(uuid, numeric, numeric, date, text, numeric, date),
   plataforma_pagamento_registrar(uuid, text, numeric, numeric, date, text), plataforma_pagamentos(uuid),
-  plataforma_pagamento_estornar(bigint), plataforma_comissoes(date)
+  plataforma_pagamento_estornar(bigint), plataforma_comissoes(date),
+  plataforma_vendedores(), plataforma_vendedor_salvar(text, text), plataforma_vendedor_excluir(uuid),
+  vendedor_eu(), vendedor_cobranca(), vendedor_comissoes(date)
 to authenticated;
 
 -- ---------- fotos (Supabase Storage): qualquer um lê; o dono envia/altera; o painel do restaurante só ENVIA fotos novas (nome = hash, sem sobrescrever) ----------

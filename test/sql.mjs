@@ -29,6 +29,7 @@ const A = (await good('plataforma_criar_restaurante', { p_slug: 'pizza-boa', p_n
 const B = (await good('plataforma_criar_restaurante', { p_slug: 'burger', p_nome: 'Burger', ...P, p_admin_senha: 'outra-senha' }, dono)).id;
 ok(!!A && !!B, 'dois restaurantes criados (mesmo login "dono" em ambos)');
 ok(/reservado/.test(await bad('plataforma_criar_restaurante', { p_slug: 'admin', p_nome: 'X', ...P }, dono)), 'slug "admin" é reservado');
+ok(/reservado/.test(await bad('plataforma_criar_restaurante', { p_slug: 'termos', p_nome: 'X', ...P }, dono)) && /reservado/.test(await bad('plataforma_criar_restaurante', { p_slug: 'privacidade', p_nome: 'X', ...P }, dono)), 'slugs "termos" e "privacidade" são reservados (páginas legais)');
 ok(/Endereço/.test(await bad('plataforma_criar_restaurante', { p_slug: 'Ab c', p_nome: 'X', ...P }, dono)), 'slug inválido recusado');
 ok(/Já existe/.test(await bad('plataforma_criar_restaurante', { p_slug: 'burger', p_nome: 'X', ...P }, dono)), 'slug repetido recusado');
 ok(/senha/i.test(await bad('plataforma_criar_restaurante', { p_slug: 'curto', p_nome: 'X', ...P, p_admin_senha: '123' }, dono)), 'senha curta recusada');
@@ -321,6 +322,67 @@ console.log('6e) cobrança: mensalidade, pagamentos, comissões, aviso e bloquei
   await salvar(null, { p_cancelado: await dia(0) });
   ok((await cob()).situacao === 'cancelado', 'restaurante cancelado aparece como cancelado');
   await salvar(null);
+}
+
+console.log('6f) horário do cardápio, limites de tentativas, vendedor (leitura) e termos');
+{
+  const gar = (await login('pizza-boa', 'gar1', 'garcom123')).token, mesaH = mesasA[1];
+  const dow = async n => (await be.query("select ((extract(dow from (now() at time zone 'America/Sao_Paulo'))::int + $1::int) % 7) as d", [n])).rows[0].d;
+  const na = async j => (await be.query("select _na_janela($1::jsonb, 'America/Sao_Paulo') as ok", [JSON.stringify(j)])).rows[0].ok;
+  // janela de horário
+  ok((await na(null)) === true && (await na({ de: '00:00', ate: '23:59', dias: [] })) === true, 'sem janela ou dia inteiro: disponível');
+  ok((await na({ de: '00:00', ate: '23:59', dias: [await dow(0)] })) === true && (await na({ de: '00:00', ate: '23:59', dias: [await dow(1)] })) === false, 'dias da semana: hoje sim, amanhã não');
+  ok((await na({ de: '00:01', ate: '00:00', dias: [] })) === true, 'janela que atravessa a meia-noite');
+  ok((await be.query("select _janela_texto('{\"de\":\"18:00\",\"ate\":\"23:00\",\"dias\":[4,5]}'::jsonb) as t")).rows[0].t === 'das 18:00 às 23:00 (qui, sex)', 'texto da janela');
+  const comJanela = j => good('admin_publicar', { p_token: tokA, p_modelo: { name: 'Pizza Boa' }, p_itens: itA.map(i => i.id === 'suco' ? { ...i, janela: j } : i) });
+  await comJanela({ de: '00:00', ate: '23:59', dias: [await dow(1)] });   // só amanhã
+  await good('admin_config_set', { p_token: tokA, p_taxa: 10, p_auto: true });
+  const cli = await good('publico_entrar', { p_slug: 'pizza-boa', p_codigo: mesaH.codigo, p_nome: 'Dani' });
+  ok(/Fora do horário.*Suco.*disponível das 00:00 às 23:59/.test(await bad('publico_pedir', { p_cliente_token: cli.cliente_token, p_itens: [{ id: 'suco', q: 1 }] })), 'cliente não pede item fora do horário (servidor recusa)');
+  ok((await be.query("select count(*)::int c from pedidos where comanda_id = (select comanda_id from clientes where id = (select id from clientes where nome = 'Dani' limit 1))")).rows[0].c === 0, 'pedido recusado não cria nada');
+  ok(!!(await good('garcom_pedir', { p_token: gar, p_mesa: mesaH.id, p_itens: [{ id: 'suco', q: 1 }] })).pedido_id, 'garçom pode lançar fora do horário (exceção da cozinha)');
+  ok(!!(await good('publico_pedir', { p_cliente_token: cli.cliente_token, p_itens: [{ id: 'x1', q: 1 }] })).pedido_id, 'item sem janela continua normal');
+  await comJanela({ de: '00:00', ate: '23:59', dias: [] });
+  ok(!!(await good('publico_pedir', { p_cliente_token: cli.cliente_token, p_itens: [{ id: 'suco', q: 1 }] })).pedido_id, 'dentro do horário o cliente pede normalmente');
+  await comJanela(null);
+  // chamar garçom: 5 por 10 minutos
+  for (let i = 0; i < 5; i++) await good('publico_chamar_garcom', { p_cliente_token: cli.cliente_token });
+  ok(/Muitos chamados/.test(await bad('publico_chamar_garcom', { p_cliente_token: cli.cliente_token })), 'limite de 5 chamados ao garçom em 10 minutos');
+  await good('admin_config_set', { p_token: tokA, p_taxa: 10, p_auto: false });
+  // login: 5 tentativas erradas bloqueiam por 10 minutos
+  await be.query('delete from login_falhas');
+  const tent = []; for (let i = 0; i < 5; i++) tent.push((await login('pizza-boa', 'gar1', 'errada')).erro);
+  ok(/Restam 4/.test(tent[0]) && /Restam 1/.test(tent[3]) && /bloqueado por 10 minutos/.test(tent[4]), 'mostra as tentativas restantes e bloqueia na 5ª');
+  const bloq = await login('pizza-boa', 'gar1', 'garcom123');
+  ok(bloq.ok === false && /Muitas tentativas.*minuto/.test(bloq.erro), 'depois de 5 erros nem a senha certa entra (10 min)');
+  ok((await login('pizza-boa', 'dono', 'secreta1')).ok === true, 'o bloqueio é só do usuário que errou');
+  await be.query('delete from login_falhas');
+  ok((await login('pizza-boa', 'gar1', 'garcom123')).ok === true, 'passado o bloqueio, entra de novo');
+  // vendedor: leitura apenas
+  const vend = await be.criarUsuarioAuth('vend@x.com', 'x', false);
+  ok(/Usuário não encontrado/.test(await bad('plataforma_vendedor_salvar', { p_email: 'nao-existe@x.com', p_nome: 'Carlos' }, dono)), 'vendedor precisa existir no Authentication do Supabase');
+  ok(/sem_permissao/.test(await bad('plataforma_vendedor_salvar', { p_email: 'vend@x.com', p_nome: 'Carlos' }, vend)), 'vendedor não se cadastra sozinho');
+  await good('plataforma_vendedor_salvar', { p_email: 'vend@x.com', p_nome: 'Carlos' }, dono);
+  ok((await good('plataforma_vendedores', {}, dono)).some(v => v.nome === 'Carlos' && v.restaurantes >= 1), 'dono lista os vendedores');
+  ok((await good('vendedor_eu', {}, vend)).nome === 'Carlos' && /sem_permissao/.test(await bad('vendedor_eu', {}, intruso)), 'só o vendedor cadastrado entra no painel de vendedor');
+  const vc = await good('vendedor_cobranca', {}, vend);
+  ok(vc.restaurantes.length === 1 && vc.restaurantes[0].id === A, 'vendedor vê só os restaurantes dele (A, não o B)');
+  ok(/sem_permissao/.test(await bad('plataforma_cobranca', {}, vend)) && /sem_permissao/.test(await bad('plataforma_comissoes', { p_mes: null }, vend)), 'vendedor não acessa o painel do dono');
+  ok(/sem_permissao/.test(await bad('plataforma_cobranca_salvar', { p_rest: A, p_mensalidade: 1, p_implantacao: 1, p_vencimento: null, p_vendedor: 'Carlos', p_comissao: 99, p_cancelado: null }, vend)) && /sem_permissao/.test(await bad('plataforma_pagamento_registrar', { p_rest: A, p_tipo: 'mensalidade', p_valor: 10, p_tarifa: 0, p_recebido_em: null, p_obs: '' }, vend)), 'vendedor não altera valores nem registra pagamentos');
+  await good('plataforma_pagamento_registrar', { p_rest: A, p_tipo: 'mensalidade', p_valor: 100, p_tarifa: 0, p_recebido_em: null, p_obs: 'teste' }, dono);
+  const vm = await good('vendedor_comissoes', { p_mes: null }, vend);
+  ok(vm.linhas.length === 1 && vm.linhas[0].restaurante_id === A && near(vm.linhas[0].comissao, 35) && vm.implantacoes === undefined, 'comissão do vendedor: só a dele, sem a parte do titular');
+  await good('plataforma_vendedor_excluir', { p_user: vend }, dono);
+  ok(/sem_permissao/.test(await bad('vendedor_eu', {}, vend)), 'remover o acesso funciona na hora');
+  await be.query("delete from pagamentos_plano where obs = 'teste'");
+  // termos de uso
+  ok(/sessao_invalida/.test(await bad('admin_termos_status', { p_token: cxA })), 'só o administrador aceita os termos');
+  const t0 = await good('admin_termos_status', { p_token: tokA });
+  ok(t0.aceito === false && /^\d{4}-\d{2}-\d{2}$/.test(t0.versao), 'primeiro acesso: termos ainda não aceitos');
+  ok(/atualizados/.test(await bad('admin_termos_aceitar', { p_token: tokA, p_versao: '1999-01-01' })), 'versão errada recusada');
+  await good('admin_termos_aceitar', { p_token: tokA, p_versao: t0.versao }); await good('admin_termos_aceitar', { p_token: tokA, p_versao: t0.versao });
+  ok((await good('admin_termos_status', { p_token: tokA })).aceito === true && (await be.query('select count(*)::int c from aceites_termos')).rows[0].c === 1, 'aceite registrado uma vez (com data) e vale para a versão');
+  ok((await good('admin_termos_status', { p_token: tokB })).aceito === false, 'o aceite é de cada usuário');
 }
 
 console.log('7) bloqueio de restaurante');

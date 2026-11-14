@@ -117,6 +117,41 @@ function siteRuntime() {
       if (f) f.q += l.q; else lines.push(l);
       save(); bar();
     }
+    /* ---------- cardápio por horário (a regra de verdade está no servidor; aqui é só a vitrine) ---------- */
+    function agoraNoFuso() {
+      try {
+        var p = {}; new Intl.DateTimeFormat('en-US', { timeZone: DATA.tz || 'America/Sao_Paulo', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).forEach(function (x) { p[x.type] = x.value; });
+        return { dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday), min: Number(p.hour) * 60 + Number(p.minute) };
+      } catch (e) { var n = new Date(); return { dow: n.getDay(), min: n.getHours() * 60 + n.getMinutes() }; }
+    }
+    function hm(t) { var x = String(t || '').split(':'); return Number(x[0]) * 60 + Number(x[1] || 0); }
+    function inWin(w) {
+      if (!w) return true;
+      var n = agoraNoFuso(), de = hm(w.de), ate = hm(w.ate), dias = w.dias || [];
+      function dia(d) { return !dias.length || dias.indexOf(d) >= 0; }
+      if (de <= ate) return dia(n.dow) && n.min >= de && n.min <= ate;
+      return (n.min >= de && dia(n.dow)) || (n.min <= ate && dia((n.dow + 6) % 7));
+    }
+    function winText(w) {
+      var N = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+      return 'das ' + w.de + ' às ' + w.ate + ((w.dias || []).length ? ' (' + w.dias.map(function (d) { return N[d]; }).join(', ') + ')' : '');
+    }
+    function applyWin() {
+      [].forEach.call(d.querySelectorAll('section.cat[data-win]'), function (sec) {
+        var w; try { w = JSON.parse(sec.getAttribute('data-win')); } catch (e) { return; }
+        var ok = inWin(w), note = sec.querySelector('.win-note');
+        sec.classList.toggle('off', !ok);
+        sec.hidden = !ok && DATA.off === 'hide';
+        var tab = d.querySelector('.tabs a[href="#' + sec.id + '"]'); if (tab) tab.hidden = sec.hidden;
+        if (!ok && !note) { note = el('div', { class: 'win-note' }); sec.insertBefore(note, sec.children[1] || null); }
+        if (note) { note.hidden = ok; note.textContent = '🕒 Disponível ' + winText(w); }
+        [].forEach.call(sec.querySelectorAll('[data-add]'), function (b) {
+          if (!ok) { if (!b.hasAttribute('data-ot')) b.setAttribute('data-ot', b.textContent); b.disabled = true; b.textContent = 'Indisponível agora'; }
+          else if (b.hasAttribute('data-ot')) { b.disabled = false; b.textContent = b.getAttribute('data-ot'); b.removeAttribute('data-ot'); }
+        });
+      });
+    }
+    applyWin(); setInterval(applyWin, 60000);
     function fee() { return (!MM && info.type === 'delivery') ? C.fee : 0; }
     function dedupe() { var out = []; lines.forEach(function (l) { var f = null; out.forEach(function (x) { if (key(x) === key(l)) f = x; }); if (f) f.q += l.q; else out.push(l); }); lines = out; }
     // sugestões do carrinho: o que mais sai junto com o que já está no pedido (histórico do restaurante), depois os mais pedidos
@@ -188,6 +223,7 @@ function siteRuntime() {
       if (!b) return;
       var id = b.getAttribute('data-add'), it = DATA.items[id];
       if (!it) return;
+      if (it.w && !inWin(it.w)) { toast('Fora do horário: disponível ' + winText(it.w)); return; }
       if (MM && !ready()) { gate(); return; }
       if (it.v.length > 1 || it.a.length) { itemSheet(id); return; }
       add({ id: id, v: it.v.length ? it.v[0].l : '', a: [], q: 1, o: '' });
@@ -409,6 +445,7 @@ function siteRuntime() {
         sh.appendChild(head('Bem-vindo!', close));
         sh.appendChild(el('p', { class: 'muted', text: 'Mesa ' + mesaNum() + '. Como podemos chamar você?' }));
         sh.appendChild(field('Seu nome', inp)); sh.appendChild(err); sh.appendChild(go);
+        sh.appendChild(el('p', { class: 'muted', style: 'font-size:.74rem;text-align:center;margin-top:10px' }, ['Ao entrar, você concorda com os ', el('a', { href: 'https://menuazul.igorcabral.dev.br/termos', target: '_blank', rel: 'noopener', text: 'Termos de Uso' }), ' e a ', el('a', { href: 'https://menuazul.igorcabral.dev.br/privacidade', target: '_blank', rel: 'noopener', text: 'Política de Privacidade' }), '. Usamos só o seu nome e os seus pedidos para atender a mesa.']));
         setTimeout(function () { inp.focus(); }, 60);
       });
     }
@@ -505,14 +542,15 @@ function siteRuntime() {
     // Conta encerrada: agradecimento do restaurante + "Uma experiência Menu Azul"; em 5 s vai para a página inicial da plataforma
     function endScreen() {
       if (d.querySelector('.ov.end')) return;
-      var home = location.origin + '/', left = 5, tick = null;
-      var cd = el('p', { class: 'end-cd', text: 'Voltando para o Menu Azul em 5s…' });
+      var home = location.origin + '/', rv = SYS && SYS.review ? SYS.review : '', left = rv ? 10 : 5, tick = null;   // com link de avaliação o cliente tem mais tempo
+      var cd = el('p', { class: 'end-cd', text: 'Voltando para o Menu Azul em ' + left + 's…' });
       function stay() { clearInterval(tick); ov.remove(); d.body.classList.remove('noscroll'); }
       var ov = el('div', { class: 'ov end', role: 'dialog', 'aria-live': 'polite' }, [el('div', { class: 'endcard' }, [
         SYS && SYS.logo ? el('img', { class: 'end-logo', src: SYS.logo, alt: '' }) : null,
         el('h2', { text: 'Obrigado pela visita!' }),
         el('p', { class: 'muted', text: (SYS && SYS.nome ? SYS.nome + ' agradece a sua presença. ' : '') + 'Volte sempre! 💛' }),
         el('div', { class: 'end-exp' }, [el('span', { text: 'Uma experiência' }), el('img', { src: home + 'brand/menuazul.png', alt: 'Menu Azul' })]),
+        rv ? el('a', { class: 'end-rv', href: rv, target: '_blank', rel: 'noopener', text: '⭐ Avaliar no Google', onclick: function () { clearInterval(tick); cd.textContent = 'Obrigado pela avaliação! 💛'; } }) : null,
         cd,
         el('button', { class: 'end-stay', type: 'button', text: 'Ficar no cardápio', onclick: stay }),
         el('div', { class: 'end-bar' })])]);

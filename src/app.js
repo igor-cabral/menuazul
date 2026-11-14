@@ -543,6 +543,9 @@
         checkField('Botão flutuante "Fazer pedido"', 'options.orderButton', 'Abre o WhatsApp direto.'),
         checkField('Botão "Pedir" em cada produto', 'options.itemOrderButton', 'Abre o WhatsApp com o nome do produto.')),
       section('Rodapé'),
+      selectField('Categorias fora do horário', 'options.offHours', [['show', 'Mostrar com aviso "Disponível das…"'], ['hide', 'Esconder até o horário']]),
+      textField('Link de avaliação do Google (opcional)', 'options.googleReview', { placeholder: 'https://g.page/r/…/review ou link do Google Maps' }),
+      h('p', { class: 'hint', id: 'rv-hint' }, 'Aparece no rodapé e na tela de agradecimento depois que a conta fecha. Sem link, o cliente não recebe o convite. Só links do Google (https).'),
       checkField('Faixa "Uma experiência Menu Azul" no fim do cardápio', 'options.platformBrand', 'Mostra a marca Menu Azul e "Desenvolvido por igor cabral.". Ligada por padrão.'),
       textField('Texto do rodapé', 'options.footerText', { multiline: true, rows: 2 }),
       h('div', { class: 'two' }, textField('Crédito (texto)', 'options.creditText', { placeholder: 'Site por …' }), textField('Crédito (link)', 'options.creditUrl', { placeholder: 'https://…' })),
@@ -781,11 +784,32 @@
         cur.categories.splice(ci, 1); changed(); renderPanel(true);
       } }, '🗑'));
     body.append(bindInput(cat, 'description', { placeholder: 'Descrição da categoria (opcional)' }));
+    body.append(winBlock(cat));
     cat.items.forEach((it, ii) => body.append(itemBlock(cat, it, ii)));
     body.append(h('div', {}, h('button', { class: 'btn sm', onclick: () => {
       const it = newItem(); cat.items.push(it); ui.focusId = it.id; ui.closed.delete(cat.id); changed(); renderPanel(true);
     } }, '+ Produto')));
     return h('div', { class: 'cat' }, head, body);
+  }
+
+  /* disponibilidade da categoria por horário (almoço, jantar...) */
+  function winBlock(cat) {
+    const w = cat.schedule = Object.assign(MenuGen.normWin(null), cat.schedule || {});
+    const box = h('div', { class: 'winbox' });
+    const draw = () => {
+      box.textContent = '';
+      const on = h('input', { type: 'checkbox', class: 'win-on', checked: w.on, onchange: () => { w.on = on.checked; changed(); draw(); } });
+      box.append(h('label', { class: 'win-t' }, on, ' 🕒 Só em certos horários'));
+      if (!w.on) return;
+      const set = (f, t) => { w.from = f; w.to = t; changed(); draw(); };
+      box.append(h('div', { class: 'win-pre' }, [['Almoço', '11:00', '15:00'], ['Jantar', '18:00', '23:00'], ['Café da manhã', '06:00', '11:00'], ['Happy hour', '17:00', '19:00']].map(([l, f, t]) => h('button', { class: 'btn sm ghost', type: 'button', onclick: () => set(f, t) }, l))));
+      const from = h('input', { type: 'time', class: 'win-from', value: w.from, onchange: () => { w.from = from.value || w.from; changed(); } }), to = h('input', { type: 'time', class: 'win-to', value: w.to, onchange: () => { w.to = to.value || w.to; changed(); } });
+      box.append(h('div', { class: 'win-row' }, 'Das ', from, ' às ', to));
+      box.append(h('div', { class: 'win-days' }, ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((l, d) => h('button', { type: 'button', class: 'day' + (w.days.includes(d) ? ' on' : ''), title: ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'][d], 'data-dia': d, onclick: () => {
+        w.days = w.days.includes(d) ? w.days.filter(x => x !== d) : w.days.concat(d).sort(); changed(); draw(); } }, l))));
+      box.append(h('p', { class: 'hint' }, 'Sem nenhum dia marcado vale todos os dias. Se o fim for antes do início (ex.: 18:00 às 02:00), atravessa a meia-noite. Fora do horário o cliente vê a categoria, mas não consegue pedir; no cardápio online o pedido é recusado também no servidor.'));
+    };
+    draw(); return box;
   }
 
   function panelMenu() {
