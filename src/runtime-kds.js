@@ -178,9 +178,13 @@ function kdsRuntime(app, CFG) {
     });
   }
 
+  // atualização econômica: o servidor só devolve a lista quando algo mudou (p_hash); se a rede falha, a espera dobra; e o ritmo varia um pouco para as telas não baterem juntas
+  var pollFail = 0;
+  function pollMs() { var b = d.hidden ? 8000 : 3000, f = pollFail ? Math.min(30000, b * Math.pow(2, pollFail)) : b; return Math.round(f * (0.85 + Math.random() * 0.3) * (window.GC_POLL_SCALE || 1)); }
   function refresh() {
-    return api('kds_listar', { p_token: token }).then(function (r) {
-      S.offset = new Date(r.agora).getTime() - Date.now();
+    return api('kds_listar', { p_token: token, p_hash: S.h }).then(function (r) {
+      var cached = false; if (r.sem_mudanca && S.last) { r = S.last; cached = true; } else { S.last = r; S.h = r.h; }
+      pollFail = 0; if (!cached) S.offset = new Date(r.agora).getTime() - Date.now();
       var wasOff = !S.online; S.online = true;
       var ids = {}; r.pedidos.forEach(function (p) { ids[p.id] = 1; });
       if (printOn && !S.limitado) { var np = r.pedidos.filter(function (p) { return p.status === 'novo' && printed.indexOf(p.id) < 0; }); if (np.length) { markPrinted(np.map(function (p) { return p.id; })); np.forEach(printTicket); } }
@@ -194,11 +198,12 @@ function kdsRuntime(app, CFG) {
       var sig = JSON.stringify([r.setor, r.setores, r.limitado, r.pedidos]);
       if (sig !== S.sig || wasOff) { S.sig = sig; S.pedidos = r.pedidos; S.setor = r.setor; S.setores = r.setores; S.limitado = !!r.limitado; board(); }
     }, function (e) {
+      pollFail = Math.min(pollFail + 1, 4);
       if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) { CFG.expired(); return; }
       if (S.online) { S.online = false; if (connEl) { connEl.className = 'dot off'; connEl.title = 'Sem conexão'; } }
     });
   }
-  function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, d.hidden ? 8000 : 3000); }
+  function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, pollMs()); }
   function start() { board(); wake(); refresh().then(loop, loop); }
 
   var tk = setInterval(function () { tickTimes(); if (sndEl) sndEl.textContent = sndLabel(); }, 1000);

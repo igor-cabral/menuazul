@@ -385,6 +385,44 @@ console.log('6f) horário do cardápio, limites de tentativas, vendedor (leitura
   ok((await good('admin_termos_status', { p_token: tokB })).aceito === false, 'o aceite é de cada usuário');
 }
 
+console.log('6g) consulta por mudança (p_hash) e limpeza de dados antigos');
+{
+  const gar = (await login('pizza-boa', 'gar1', 'garcom123')).token;
+  const cmd = (await be.query("select c.id, c.mesa_id from comandas c join mesas m on m.id = c.mesa_id where c.status = 'aberta' and m.restaurante_id = $1 order by c.aberta_em limit 1", [A])).rows[0];
+  const cliTok = (await be.query('select token from clientes where comanda_id = $1 limit 1', [cmd.id])).rows[0].token;
+  const casos = [
+    ['kds_listar', { p_token: kdA }], ['caixa_mesas', { p_token: cxA }], ['garcom_mesas', { p_token: gar }],
+    ['garcom_mesa', { p_token: gar, p_mesa: cmd.mesa_id }], ['caixa_comanda', { p_token: cxA, p_comanda: cmd.id }], ['publico_estado', { p_cliente_token: cliTok }]];
+  for (const [fn, args] of casos) {
+    const r1 = await good(fn, args);
+    ok(typeof r1.h === 'string' && r1.h.length === 32 && !r1.sem_mudanca, fn + ': a resposta completa traz o hash');
+    const r2 = await good(fn, { ...args, p_hash: r1.h });
+    ok(r2.sem_mudanca === true && r2.h === r1.h && Object.keys(r2).length === 2, fn + ': nada mudou → só {sem_mudanca}');
+    const r3 = await good(fn, { ...args, p_hash: '0'.repeat(32) });
+    ok(!r3.sem_mudanca && r3.h === r1.h, fn + ': hash antigo/errado recebe a resposta completa');
+  }
+  // uma mudança real muda o hash
+  const antes = await good('garcom_mesas', { p_token: gar });
+  await good('garcom_pedir', { p_token: gar, p_mesa: cmd.mesa_id, p_itens: [{ id: 'suco', q: 1 }] });
+  const depois = await good('garcom_mesas', { p_token: gar, p_hash: antes.h });
+  ok(!depois.sem_mudanca && depois.h !== antes.h, 'pedido novo muda o hash e a tela recebe a lista nova');
+  ok(/sessao_invalida/.test(await bad('garcom_mesas', { p_token: cxA, p_hash: antes.h })), 'o hash não contorna a permissão');
+  // limpeza de dados antigos
+  ok(/sem_permissao/.test(await bad('plataforma_limpeza', { p_meses_contas: 24 }, intruso)), 'só o dono roda a limpeza');
+  const fechada = (await be.query("select c.id from comandas c join mesas m on m.id = c.mesa_id where c.status = 'encerrada' and m.restaurante_id = $1 limit 1", [A])).rows[0];
+  await be.query("update comandas set encerrada_em = now() - interval '30 months' where id = $1", [fechada.id]);
+  await be.query("insert into esgotado_log (restaurante_id, item_id, esgotado, em) values ($1, 'x1', true, now() - interval '8 months')", [A]);
+  await be.query("insert into staff_sessoes (usuario_id, restaurante_id, papel, expira_em) select id, restaurante_id, papel, now() - interval '10 days' from usuarios limit 1");
+  const pgsAntes = (await be.query('select count(*)::int c from pagamentos_plano')).rows[0].c;
+  const lim = await good('plataforma_limpeza', { p_meses_contas: 24 }, dono);
+  ok(lim.contas >= 1 && lim.esgotados >= 1 && lim.sessoes >= 1, 'limpeza apaga conta antiga, esgotado antigo e sessão vencida');
+  ok((await be.query('select count(*)::int c from comandas where id = $1', [fechada.id])).rows[0].c === 0 && (await be.query('select count(*)::int c from pedidos where comanda_id = $1', [fechada.id])).rows[0].c === 0, 'a conta antiga leva junto os pedidos dela');
+  ok((await be.query('select count(*)::int c from pagamentos_plano')).rows[0].c === pgsAntes, 'pagamentos de mensalidade nunca são apagados');
+  ok((await be.query("select count(*)::int c from comandas c join mesas m on m.id = c.mesa_id where c.status = 'aberta' and m.restaurante_id = $1", [A])).rows[0].c >= 1, 'contas abertas e recentes continuam');
+  const lim0 = await good('plataforma_limpeza', { p_meses_contas: 0 }, dono);
+  ok(lim0.contas === 0, 'prazo absurdamente curto é limitado (mínimo 3 meses)');
+}
+
 console.log('7) bloqueio de restaurante');
 await good('plataforma_salvar_restaurante', { p_id: B, p_nome: 'Burger', p_slug: 'burger', p_ativo: false, p_motivo: 'Inadimplente' }, dono);
 ok((await be.query('select count(*)::int n from staff_sessoes where restaurante_id = $1', [B])).rows[0].n === 0, 'sessões do restaurante bloqueado foram apagadas');

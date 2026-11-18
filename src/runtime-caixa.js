@@ -174,8 +174,9 @@ function caixaRuntime(app, CFG) {
   function drawerLoad(first) {
     if (!DR) return Promise.resolve();
     var id = DR.id;
-    return api('caixa_comanda', { p_token: token, p_comanda: id }).then(function (r) {
+    return api('caixa_comanda', { p_token: token, p_comanda: id, p_hash: first || !DR.sig ? undefined : DR.h }).then(function (r) {
       if (!DR || DR.id !== id) return;
+      if (r.sem_mudanca && DR.data) return; DR.h = r.h;
       var sig = JSON.stringify(r.comanda) + JSON.stringify(r.pedidos) + JSON.stringify(r.totais) + JSON.stringify(r.pagamentos);
       DR.data = r; S.offset = new Date(r.agora).getTime() - Date.now();
       if (sig !== DR.sig || first) { DR.sig = sig; drawerRender(); }
@@ -286,9 +287,13 @@ function caixaRuntime(app, CFG) {
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
   /* ---------- polling ---------- */
+  // atualização econômica: o servidor só devolve a lista quando algo mudou (p_hash); se a rede falha, a espera dobra; e o ritmo varia um pouco para as telas não baterem juntas
+  var pollFail = 0;
+  function pollMs() { var b = d.hidden ? 8000 : 3000, f = pollFail ? Math.min(30000, b * Math.pow(2, pollFail)) : b; return Math.round(f * (0.85 + Math.random() * 0.3) * (window.GC_POLL_SCALE || 1)); }
   function refresh() {
-    return api('caixa_mesas', { p_token: token }).then(function (r) {
-      S.offset = new Date(r.agora).getTime() - Date.now(); S.cfg = r.config || {};
+    return api('caixa_mesas', { p_token: token, p_hash: S.h }).then(function (r) {
+      var cached = false; if (r.sem_mudanca && S.last) { r = S.last; cached = true; } else { S.last = r; S.h = r.h; }
+      pollFail = 0; if (!cached) S.offset = new Date(r.agora).getTime() - Date.now(); S.cfg = r.config || {};
       var wasOff = !S.online; S.online = true; if (dot) { dot.className = 'dot'; }
       var seen = {}, alert_ = false;
       r.mesas.forEach(function (m) { if (m.comanda) { seen[m.id] = (m.comanda.conta_pedida ? 'c' : '') + m.comanda.prontos; if (S.seen && (S.seen[m.id] === undefined ? false : S.seen[m.id] !== seen[m.id]) && (m.comanda.conta_pedida || Number(m.comanda.prontos))) alert_ = true; } });
@@ -299,11 +304,12 @@ function caixaRuntime(app, CFG) {
       if (sig !== S.sig || wasOff) { S.sig = sig; S.mesas = r.mesas; paint(); }
       if (DR) return drawerLoad(false);
     }, function (e) {
+      pollFail = Math.min(pollFail + 1, 4);
       if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) { CFG.expired(); return; }
       S.online = false; if (dot) dot.className = 'dot off';
     });
   }
-  function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, d.hidden ? 8000 : 3000); }
+  function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, pollMs()); }
   function start() { shell(); if (S.tab === 'resumo') loadResumo(); refresh().then(loop, loop); }
   function vis() { if (!d.hidden) refresh(); }
   d.addEventListener('visibilitychange', vis);

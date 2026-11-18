@@ -283,6 +283,22 @@ create table if not exists aceites_termos (
 );
 alter table aceites_termos enable row level security;
 
+-- ---------- consulta por mudança (reduz tráfego e CPU das telas que atualizam sozinhas) ----------
+-- A tela manda o hash da última resposta que recebeu (p_hash). Se nada mudou, o servidor responde só {"sem_mudanca":true}.
+-- O campo "agora" (relógio) fica fora do hash, porque muda a cada chamada.
+create or replace function _delta(p_json jsonb, p_hash text) returns jsonb
+language sql immutable set search_path = public, pg_temp as $$
+  select case when p_hash is not null and md5((p_json - 'agora')::text) = p_hash
+              then jsonb_build_object('sem_mudanca', true, 'h', p_hash)
+              else p_json || jsonb_build_object('h', md5((p_json - 'agora')::text)) end
+$$;
+
+-- índices para relatórios e limpeza por data
+create index if not exists comandas_encerrada on comandas (encerrada_em) where status = 'encerrada';
+create index if not exists pedidos_criado on pedidos (criado_em);
+create index if not exists pagamentos_em on pagamentos (em);
+create index if not exists staff_sessoes_exp on staff_sessoes (expira_em);
+
 create or replace function _sessao(p_token uuid, p_papeis text[]) returns staff_sessoes
 language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare s staff_sessoes; v_rest_ativo boolean; v_user_ativo boolean;
@@ -486,7 +502,8 @@ begin
   return jsonb_build_object('cliente_token', cl.token, 'cliente_id', cl.id, 'comanda_id', c.id, 'nome', cl.nome);
 end $$;
 
-create or replace function publico_estado(p_cliente_token uuid) returns jsonb
+drop function if exists publico_estado(uuid);
+create or replace function publico_estado(p_cliente_token uuid, p_hash text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare cl clientes; c comandas; m mesas;
 begin
@@ -496,11 +513,11 @@ begin
   if c.status <> 'aberta' then
     return jsonb_build_object('mesa', jsonb_build_object('numero', m.numero), 'comanda', jsonb_build_object('status', c.status));
   end if;
-  return jsonb_build_object(
+  return _delta(jsonb_build_object(
     'mesa', jsonb_build_object('numero', m.numero),
     'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'conta_pedida', c.conta_pedida, 'chamado', c.chamado_em is not null),
     'eu', jsonb_build_object('id', cl.id, 'nome', cl.nome),
-    'clientes', _clientes_json(c.id), 'pedidos', _pedidos_json(c.id), 'totais', _totais(c.id));
+    'clientes', _clientes_json(c.id), 'pedidos', _pedidos_json(c.id), 'totais', _totais(c.id)), p_hash);
 end $$;
 
 create or replace function publico_pedir(p_cliente_token uuid, p_itens jsonb, p_obs text default null) returns jsonb
@@ -575,7 +592,8 @@ begin
 end $$;
 
 -- ---------- cozinha ----------
-create or replace function kds_listar(p_token uuid) returns jsonb
+drop function if exists kds_listar(uuid);
+create or replace function kds_listar(p_token uuid, p_hash text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare s staff_sessoes; v_setor uuid; v_nome text; v_padrao uuid;
 begin
@@ -584,7 +602,7 @@ begin
   if s.papel = 'cozinha' then
     select u.setor_id, st.nome into v_setor, v_nome from usuarios u left join setores st on st.id = u.setor_id where u.id = s.usuario_id;
   end if;
-  return jsonb_build_object('agora', now(),
+  return _delta(jsonb_build_object('agora', now(),
     'setor', case when v_setor is null then null else jsonb_build_object('id', v_setor, 'nome', v_nome) end,
     'setores', (select count(*) from setores where restaurante_id = s.restaurante_id),
     'limitado', (select _cobranca_nivel(proximo_vencimento, fuso) >= 1 from restaurantes where id = s.restaurante_id),
@@ -603,7 +621,7 @@ begin
     left join setores st on st.id = p.setor_id
     where p.status in ('novo','preparando','pronto')
       and (v_setor is null or p.setor_id = v_setor or (p.setor_id is null and v_setor = v_padrao))
-  ), '[]'::jsonb));
+  ), '[]'::jsonb)), p_hash);
 end $$;
 
 create or replace function pedido_status(p_token uuid, p_pedido uuid, p_status text) returns jsonb
@@ -629,12 +647,13 @@ begin
 end $$;
 
 -- ---------- caixa ----------
-create or replace function caixa_mesas(p_token uuid) returns jsonb
+drop function if exists caixa_mesas(uuid);
+create or replace function caixa_mesas(p_token uuid, p_hash text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare s staff_sessoes;
 begin
   s := _sessao(p_token, array['caixa','admin']);
-  return jsonb_build_object(
+  return _delta(jsonb_build_object(
     'agora', now(),
     'config', (select jsonb_build_object('nome', nome, 'taxa_servico', taxa_servico) from restaurantes where id = s.restaurante_id),
     'mesas', coalesce((
@@ -649,7 +668,7 @@ begin
       ) order by nullif(regexp_replace(m.numero, '\D', '', 'g'), '')::int nulls last, m.numero)
       from mesas m left join comandas c on c.mesa_id = m.id and c.status = 'aberta'
       where m.ativa and m.restaurante_id = s.restaurante_id
-    ), '[]'::jsonb));
+    ), '[]'::jsonb)), p_hash);
 end $$;
 
 create or replace function caixa_abrir_mesa(p_token uuid, p_mesa uuid) returns jsonb
@@ -665,20 +684,21 @@ begin
   return jsonb_build_object('comanda_id', c.id);
 end $$;
 
-create or replace function caixa_comanda(p_token uuid, p_comanda uuid) returns jsonb
+drop function if exists caixa_comanda(uuid, uuid);
+create or replace function caixa_comanda(p_token uuid, p_comanda uuid, p_hash text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare s staff_sessoes; c comandas; m mesas;
 begin
   s := _sessao(p_token, array['caixa','admin']);
   c := _comanda_do(p_comanda, s.restaurante_id);
   select * into m from mesas where id = c.mesa_id;
-  return jsonb_build_object(
+  return _delta(jsonb_build_object(
     'agora', now(),
     'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'aberta_em', c.aberta_em, 'encerrada_em', c.encerrada_em,
                                   'conta_pedida', c.conta_pedida, 'mesa', m.numero),
     'clientes', _clientes_json(c.id), 'pedidos', _pedidos_json(c.id), 'totais', _totais(c.id),
     'pagamentos', (select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'metodo', g.metodo, 'valor', g.valor, 'nome', g.nome, 'em', g.em)
-                   order by g.em), '[]'::jsonb) from pagamentos g where g.comanda_id = c.id));
+                   order by g.em), '[]'::jsonb) from pagamentos g where g.comanda_id = c.id)), p_hash);
 end $$;
 
 create or replace function caixa_ajustar(p_token uuid, p_comanda uuid, p_taxa numeric, p_desconto numeric) returns jsonb
@@ -1089,13 +1109,14 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
-create or replace function garcom_mesas(p_token uuid) returns jsonb
+drop function if exists garcom_mesas(uuid);
+create or replace function garcom_mesas(p_token uuid, p_hash text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare s staff_sessoes;
 begin
   s := _sessao(p_token, array['garcom','admin']);
   perform _premium(s.restaurante_id);
-  return jsonb_build_object(
+  return _delta(jsonb_build_object(
     'agora', now(),
     'config', (select jsonb_build_object('nome', nome) from restaurantes where id = s.restaurante_id),
     'mesas', coalesce((
@@ -1110,10 +1131,11 @@ begin
       ) order by nullif(regexp_replace(m.numero, '\D', '', 'g'), '')::int nulls last, m.numero)
       from mesas m left join comandas c on c.mesa_id = m.id and c.status = 'aberta'
       where m.ativa and m.restaurante_id = s.restaurante_id
-    ), '[]'::jsonb));
+    ), '[]'::jsonb)), p_hash);
 end $$;
 
-create or replace function garcom_mesa(p_token uuid, p_mesa uuid) returns jsonb
+drop function if exists garcom_mesa(uuid, uuid);
+create or replace function garcom_mesa(p_token uuid, p_mesa uuid, p_hash text default null) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare s staff_sessoes; m mesas; c comandas;
 begin
@@ -1122,12 +1144,12 @@ begin
   select * into m from mesas where id = p_mesa and ativa and restaurante_id = s.restaurante_id;
   if not found then raise exception 'Mesa não encontrada'; end if;
   select * into c from comandas where mesa_id = m.id and status = 'aberta';
-  return jsonb_build_object(
+  return _delta(jsonb_build_object(
     'agora', now(),
     'mesa', jsonb_build_object('id', m.id, 'numero', m.numero),
     'comanda', case when c.id is null then null else jsonb_build_object(
       'id', c.id, 'aberta_em', c.aberta_em, 'conta_pedida', c.conta_pedida, 'chamado_em', c.chamado_em, 'chamado_por', c.chamado_por) end,
-    'pedidos', case when c.id is null then '[]'::jsonb else _pedidos_json(c.id) end);
+    'pedidos', case when c.id is null then '[]'::jsonb else _pedidos_json(c.id) end), p_hash);
 end $$;
 
 create or replace function garcom_itens(p_token uuid) returns jsonb
@@ -1609,6 +1631,43 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- ---------- limpeza de dados antigos ----------
+-- Contas encerradas com mais de N meses (com clientes, pedidos e pagamentos delas), registros de esgotado, sessões vencidas e falhas de login.
+-- Os pagamentos de mensalidade (cobrança do Menu Azul) NUNCA são apagados.
+create or replace function _limpeza_dados(p_meses_contas int default 24, p_meses_log int default 6) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_c int; v_e int; v_s int; v_f int;
+begin
+  delete from comandas where status = 'encerrada' and encerrada_em < now() - make_interval(months => greatest(p_meses_contas, 3));
+  get diagnostics v_c = row_count;
+  delete from esgotado_log where em < now() - make_interval(months => greatest(p_meses_log, 1));
+  get diagnostics v_e = row_count;
+  delete from staff_sessoes where expira_em < now() - interval '7 days';
+  get diagnostics v_s = row_count;
+  delete from login_falhas where em < now() - interval '1 day';
+  get diagnostics v_f = row_count;
+  return jsonb_build_object('contas', v_c, 'esgotados', v_e, 'sessoes', v_s, 'falhas_login', v_f);
+end $$;
+
+create or replace function plataforma_limpeza(p_meses_contas int default 24) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform _plataforma();
+  return _limpeza_dados(p_meses_contas, 6);
+end $$;
+
+-- agenda a limpeza toda semana (domingo, 5h UTC) quando a extensão pg_cron estiver ativada (Database > Extensions)
+do $cron$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.unschedule(jobid) from cron.job where jobname = 'menuazul-limpeza';
+    perform cron.schedule('menuazul-limpeza', '0 5 * * 0', 'select public._limpeza_dados()');
+  end if;
+exception when others then
+  raise notice 'pg_cron não configurado: %', sqlerrm;
+end
+$cron$;
+
 -- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
 create or replace function _foto_ok(p_nome text) returns boolean
 language sql stable security definer set search_path = public, pg_temp as $$
@@ -1637,17 +1696,17 @@ revoke all on all functions in schema public from public, anon, authenticated;
 
 grant execute on function
   publico_restaurante(text), publico_cardapio(text), publico_info(text, text), publico_entrar(text, text, text),
-  publico_estado(uuid), publico_pedir(uuid, jsonb, text), publico_cancelar(uuid, uuid), publico_pedir_conta(uuid),
+  publico_estado(uuid, text), publico_pedir(uuid, jsonb, text), publico_cancelar(uuid, uuid), publico_pedir_conta(uuid),
   staff_login(text, text, text), staff_logout(uuid),
-  kds_listar(uuid), pedido_status(uuid, uuid, text),
-  caixa_mesas(uuid), caixa_abrir_mesa(uuid, uuid), caixa_comanda(uuid, uuid), caixa_ajustar(uuid, uuid, numeric, numeric),
+  kds_listar(uuid, text), pedido_status(uuid, uuid, text),
+  caixa_mesas(uuid, text), caixa_abrir_mesa(uuid, uuid), caixa_comanda(uuid, uuid, text), caixa_ajustar(uuid, uuid, numeric, numeric),
   caixa_limpar_aviso(uuid, uuid), caixa_pagar(uuid, uuid, text, numeric, text), caixa_desfazer_pagamento(uuid, uuid),
   caixa_encerrar(uuid, uuid, boolean), caixa_resumo(uuid, date),
   admin_mesas(uuid), admin_criar_mesas(uuid, int), admin_salvar_mesa(uuid, uuid, text, boolean), admin_apagar_mesa(uuid, uuid),
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
   admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), admin_cobranca(uuid), admin_termos_status(uuid), admin_termos_aceitar(uuid, text), _foto_ok(text),
-  publico_chamar_garcom(uuid), publico_populares(text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid), garcom_mesa(uuid, uuid), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
+  publico_chamar_garcom(uuid), publico_populares(text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid, text), garcom_mesa(uuid, uuid, text), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
 to anon, authenticated;
 
 grant execute on function
@@ -1657,7 +1716,7 @@ grant execute on function
   plataforma_cobranca(), plataforma_cobranca_salvar(uuid, numeric, numeric, date, text, numeric, date),
   plataforma_pagamento_registrar(uuid, text, numeric, numeric, date, text), plataforma_pagamentos(uuid),
   plataforma_pagamento_estornar(bigint), plataforma_comissoes(date),
-  plataforma_vendedores(), plataforma_vendedor_salvar(text, text), plataforma_vendedor_excluir(uuid),
+  plataforma_vendedores(), plataforma_vendedor_salvar(text, text), plataforma_vendedor_excluir(uuid), plataforma_limpeza(int),
   vendedor_eu(), vendedor_cobranca(), vendedor_comissoes(date)
 to authenticated;
 

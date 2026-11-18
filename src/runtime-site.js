@@ -563,12 +563,17 @@ function siteRuntime() {
     }
 
     var timer = null, busy = false;
+    // atualização econômica: só baixa a lista quando algo mudou (p_hash), fica mais devagar quando nada acontece e espera mais se a rede falha
+    var same = 0, fails = 0;
+    function delay() { var b = same >= 24 ? 15000 : same >= 8 ? 8000 : 4000; if (fails) b = Math.min(30000, b * Math.pow(2, fails)); return Math.round(b * (0.85 + Math.random() * 0.3) * (window.GC_POLL_SCALE || 1)); }
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { d.addEventListener(ev, function () { same = 0; }, { passive: true }); });
     function refresh() {
       if (busy) return Promise.resolve();
       busy = true;
       var p;
       if (S.sess) {
-        p = api('publico_estado', { p_cliente_token: S.sess.token }).then(function (est) {
+        p = api('publico_estado', { p_cliente_token: S.sess.token, p_hash: S.h }).then(function (est) {
+          if (est.sem_mudanca && S.estFull) { same++; est = S.estFull; } else { same = 0; S.estFull = est; S.h = est.h; }
           if (est.comanda.status !== 'aberta') {
             S.sess = null; S.est = null; S.ended = true; saveSess(null); lines.length = 0; info.notes = ''; save(); bar();
             endScreen();
@@ -583,20 +588,20 @@ function siteRuntime() {
           throw e;
         });
       } else {
-        p = api('publico_info', { p_slug: SYS.slug, p_codigo: SYS.codigo }).then(function (i) { S.info = i; });
+        p = api('publico_info', { p_slug: SYS.slug, p_codigo: SYS.codigo }).then(function (i) { var sg = JSON.stringify(i); if (sg === S.infoSig) same++; else { same = 0; S.infoSig = sg; } S.info = i; });
       }
       return p.then(function () {
-        S.offline = false; S.fatal = '';
+        S.offline = false; S.fatal = ''; fails = 0;
         render();
         if (!S.sess && S.info && (S.info.aberta || S.info.abertura_automatica) && !S.asked && !S.ended) { S.asked = true; nameSheet(); }
       }, function (e) {
         if (/restaurante_bloqueado/.test(e.message)) { S.fatal = 'Serviço indisponível no momento. Chame o atendente.'; clearTimeout(timer); render(); return; }
         if (/mesa_invalida/.test(e.message)) { S.fatal = 'QR Code inválido ou desativado. Peça ajuda ao atendente.'; clearTimeout(timer); render(); return; }
-        S.offline = !e.status; if (e.status) toast(e.message);
+        fails = Math.min(fails + 1, 4); S.offline = !e.status; if (e.status) toast(e.message);
         render();
       }).then(function () { busy = false; });
     }
-    function loop() { clearTimeout(timer); if (S.fatal) return; timer = setTimeout(function () { (d.hidden ? Promise.resolve() : refresh()).then(loop, loop); }, 4000); }
+    function loop() { clearTimeout(timer); if (S.fatal || S.ended) return; timer = setTimeout(function () { (d.hidden ? Promise.resolve() : refresh()).then(loop, loop); }, delay()); }   // conta encerrada: para de consultar
     d.addEventListener('visibilitychange', function () { if (!d.hidden) refresh(); });
     render(); refresh().then(loop, loop);
   }

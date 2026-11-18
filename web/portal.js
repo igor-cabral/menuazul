@@ -43,6 +43,11 @@
   }
   function useCss(screen) { cssPortal.disabled = !!screen; cssScreen.textContent = screen || ''; }
   const APP_VERSION = '__APP_VERSION__'; // vem do package.json no build
+  const STAFF_URL = '__STAFF_URL__'; let staffP = null; // cozinha, caixa e garçom ficam num arquivo à parte (só a equipe baixa)
+  const loadStaff = () => window.GCStaff ? Promise.resolve(window.GCStaff) : staffP || (staffP = new Promise((ok, no) => {
+    const sc = document.createElement('script'); sc.src = STAFF_URL; sc.onload = () => ok(window.GCStaff);
+    sc.onerror = () => { staffP = null; sc.remove(); no(new Error('Não foi possível carregar esta tela. Verifique a conexão e tente de novo.')); }; document.head.append(sc);
+  }));
   const verEl = () => h('span', { class: 'ver', title: 'Versão da plataforma' }, 'v' + APP_VERSION);
   const brandEl = () => h('div', { class: 'brand plat' }, h('img', { src: BRAND.logo, alt: BRAND.name }), customLogo && BRAND.name);
   const topBrand = () => h('a', { class: 'tbrand', href: '/', title: BRAND.name }, h('img', { src: BRAND.logoLight, alt: BRAND.name }));
@@ -175,9 +180,11 @@
       if (!telas().includes(t)) t = admin ? 'mesas' : sess.papel;
       document.title = info.nome;
       if (t === 'caixa' || t === 'cozinha' || t === 'garcom') {
-        useCss(t === 'caixa' ? CAIXA_CSS : t === 'garcom' ? GARCOM_CSS : KDS_CSS);
+        let G = window.GCStaff;
+        if (!G) { root.replaceChildren(h('div', { class: 'center' }, h('div', { class: 'spin' }))); try { G = await loadStaff(); } catch (e) { toast(e.message); return; } if (my !== seq) return; }
+        useCss(t === 'caixa' ? G.CAIXA_CSS : t === 'garcom' ? G.GARCOM_CSS : G.KDS_CSS);
         root.replaceChildren(h('div', { id: 'app' }));
-        current = { stop: (t === 'caixa' ? caixaRuntime : t === 'garcom' ? garcomRuntime : kdsRuntime)(document.getElementById('app'), kcfg) };
+        current = { stop: (t === 'caixa' ? G.caixaRuntime : t === 'garcom' ? G.garcomRuntime : G.kdsRuntime)(document.getElementById('app'), kcfg) };
         if (admin) document.body.append(h('a', { class: 'backpill', href: '#/mesas' }, '← Painel'));
         return;
       }
@@ -516,7 +523,17 @@
           kpi('Em atraso', String(atraso.length), atraso.length ? brl(atraso.reduce((t, r) => t + Number(r.mensalidade), 0)) + ' em aberto' : 'tudo em dia'), kpi('Implantações a receber', brl(aImpl))),
         h('div', { class: 'sec' }, h('h2', {}, 'Resultados por restaurante'),
           h('p', { class: 'mut' }, 'Regras de atraso (a partir do vencimento, sem pagamento registrado): até 7 dias tolerância · do 8º dia aviso no painel do restaurante · 15 dias recursos premium desativados · 30 dias acesso suspenso (os dados ficam guardados). Registrar o pagamento regulariza na hora.'),
-          rs.length ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Situação', 'Mensalidade', 'Vencimento', 'Pedidos 30 d', 'Vendas 30 d', 'Última atividade', 'Vendedor', ''].map(x => h('th', {}, x)))), h('tbody', {}, rs.map(linha)))) : h('p', { class: 'mut' }, 'Nenhum restaurante ainda.'))), footEl());
+          rs.length ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Restaurante', 'Situação', 'Mensalidade', 'Vencimento', 'Pedidos 30 d', 'Vendas 30 d', 'Última atividade', 'Vendedor', ''].map(x => h('th', {}, x)))), h('tbody', {}, rs.map(linha)))) : h('p', { class: 'mut' }, 'Nenhum restaurante ainda.')), manutencao()), footEl());
+    }
+    function manutencao() {
+      const meses = h('input', { id: 'lim-meses', type: 'number', min: '3', max: '120', value: '24', style: 'width:90px' });
+      return h('div', { class: 'sec' }, h('h2', {}, 'Manutenção do banco'),
+        h('p', { class: 'mut' }, 'Apaga contas encerradas antigas (com os pedidos e pagamentos de salão delas), registros de esgotados com mais de 6 meses, sessões vencidas e falhas de login. Os pagamentos de mensalidade (cobrança do Menu Azul) nunca são apagados. Se a extensão pg_cron estiver ativada no Supabase, isso roda sozinho toda semana.'),
+        h('div', { class: 'row' }, h('span', {}, 'Guardar contas dos últimos'), meses, h('span', {}, 'meses'),
+          h('button', { class: 'btn dg', id: 'limpar', onclick: async () => {
+            if (!confirm('Apagar as contas encerradas com mais de ' + meses.value + ' meses? Isso não pode ser desfeito.')) return;
+            try { const r = await call('plataforma_limpeza', { p_meses_contas: num(meses.value) }); toast('Limpeza feita: ' + r.contas + ' contas, ' + r.esgotados + ' registros de esgotado, ' + r.sessoes + ' sessões, ' + r.falhas_login + ' falhas de login'); } catch (e) { toast(e.message); }
+          } }, '🧹 Limpar dados antigos')));
     }
     function cobrancaEditar(r) {
       const mens = h('input', { id: 'c-mens', type: 'number', step: '0.01', min: '0', value: r.mensalidade }), impl = h('input', { id: 'c-impl', type: 'number', step: '0.01', min: '0', value: r.implantacao }),
