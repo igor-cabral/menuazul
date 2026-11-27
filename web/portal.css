@@ -201,3 +201,4 @@ dialog::backdrop{background:rgba(6,40,106,.5);backdrop-filter:blur(3px)}
 .step h3{font-size:.98rem;font-weight:900;color:var(--navy);margin-bottom:3px}
 .step p{color:var(--mut);font-size:.9rem;line-height:1.4}
 .how .btn.big{display:inline-block;text-decoration:none;padding:14px 26px;font-size:1.05rem;border-radius:14px}
+.hero .novo{display:inline-block;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:99px;padding:6px 14px;font-weight:800;font-size:.86rem}

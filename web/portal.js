@@ -98,6 +98,7 @@
     root.replaceChildren(
       h('div', { class: 'center hero' }, h('div', { class: 'stack wide' },
         h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }),
+        h('span', { class: 'novo' }, '🆕 Novo: delivery e retirada direto na cozinha'),
         h('h1', {}, 'Cardápio digital, delivery, cozinha e caixa em um só lugar'),
         h('p', {}, 'O cliente pede pelo celular (na mesa, para entrega ou retirada), a cozinha recebe e imprime, o garçom é avisado e o caixa fecha a conta.'),
         h('form', { class: 'gofrm', onsubmit: e => { e.preventDefault(); const s = slugify(inp.value); if (s) location.href = '/' + s; } },
