@@ -91,3 +91,13 @@ Mudou preço/foto? Edite no editor e publique de novo. O restaurante marca "esgo
 
 ## Testes
 `npm test` (banco, plataforma, publicação e editor) e `npm run test:worker` (build + rotas servidas pelo Worker local). Não cobrem o Supabase/Cloudflare reais: no primeiro uso confira login em `/admin`, publicar uma foto e um pedido de ponta a ponta.
+
+
+## Delivery e retirada no sistema, impressão, alertas do garçom
+
+1. **Rode `sql/schema.sql` de novo no Supabase** (é seguro repetir). Ele cria `mesas.tipo`, `comandas.canal/contato/taxa_entrega`, `publico_pedir_delivery` e `caixa_delivery`.
+2. **Ligar por restaurante:** no editor, aba Opções, marque "Receber delivery e retirada no sistema" e **publique de novo**. Taxa de entrega, pedido mínimo, formas de pagamento e os tipos aceitos (entrega/retirada) vêm do cardápio publicado e são conferidos no servidor.
+3. **Como funciona:** o cliente monta o pedido em `/<slug>/menu`, informa nome, telefone, endereço e pagamento. O pedido cai no KDS (cartão com 🛵 Entrega ou 🛍 Retirada, telefone, endereço e troco) e na aba **Delivery** do caixa, que cuida do pagamento e do "Concluir pedido". O cliente acompanha pelo botão "🧾 Meu pedido". Limites: 3 pedidos por telefone em 30 min e 40 em 10 min por restaurante.
+4. **Impressão:** KDS e caixa têm o botão **📄 58/80 mm** (vale por aparelho). O caixa imprime a conta com a taxa de entrega e os dados do cliente. A impressão sem janela de confirmação continua exigindo o Chrome/Edge com `--kiosk-printing`.
+5. **Garçom:** banner vermelho/verde com "Entendi", alarme que se repete a cada 10 s até confirmar (ou abrir a mesa), tela sempre ligada e botão "Ativar avisos" (notificação do sistema com o app em segundo plano). Com a **tela bloqueada** só funciona push de verdade (Web Push), que fica para a próxima etapa.
+6. **Página inicial:** reescrita como página de apresentação. Para o botão "Quero para o meu restaurante" abrir o seu WhatsApp, acrescente `whatsapp: '55479...'` dentro de `brand` em `web/config.js` (sem isso o botão leva ao seu site).

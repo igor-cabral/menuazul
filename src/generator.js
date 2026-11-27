@@ -151,7 +151,7 @@ const MenuGen = (function () {
       contact: { whatsapp: '', instagram: '', phone: '', address: '', mapsUrl: '', hours: '', tz: 'America/Sao_Paulo', schedule: defaultSchedule() },
       options: {
         showSearch: true, showOpenStatus: true,
-        cartEnabled: true, typeDelivery: true, typePickup: true, typeDinein: false,
+        cartEnabled: true, entregaSistema: false, typeDelivery: true, typePickup: true, typeDinein: false,
         deliveryFee: '', minOrder: '', payments: 'Pix, Cartão, Dinheiro',
         orderButton: true, itemOrderButton: false, platformBrand: true, showPopular: true, offHours: 'show', googleReview: '',
         orderMessage: 'Olá! Gostaria de fazer um pedido:',
@@ -454,7 +454,9 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     const cardStyle = pick(t.cardStyle, CARDS, 'border');
     const catStyle = pick(t.catStyle, CATS, 'plain');
     const mesa = opts.mesa && opts.mesa.url && opts.mesa.codigo ? opts.mesa : null; // modo mesa (só no site da plataforma)
-    const cartOn = !!(o.cartEnabled && (wa || mesa));
+    // delivery/retirada direto no sistema (KDS e caixa): só no site da plataforma e se o restaurante ligou a opção no editor
+    const dlv = !mesa && o.entregaSistema && opts.entrega && opts.entrega.url && opts.entrega.slug ? opts.entrega : null;
+    const cartOn = !!(o.cartEnabled && (wa || mesa || dlv));
     const rast = opts.rastreio && opts.rastreio.url && opts.rastreio.slug ? opts.rastreio : (mesa ? { url: mesa.url, key: mesa.key, slug: mesa.slug } : null); // contagem de uso do 3D/AR (só no site publicado; a prévia do editor não conta)
 
     const name = d.name || 'Cardápio';
@@ -482,6 +484,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       sched: (hasSched && o.showOpenStatus) ? c.schedule.map(s => ({ o: s.open ? 1 : 0, f: s.from, t: s.to })) : [],
       items: {},
       cart: null,
+      dlv: dlv ? { url: String(dlv.url).replace(/\/+$/, ''), key: dlv.key, slug: dlv.slug } : null,
       pop: pop && cartOn ? { qtd: pop.qtd, juntos: pop.juntos || {}, ad: pop.adicionais || {} } : null,
       sys: mesa ? { url: String(mesa.url).replace(/\/+$/, ''), key: mesa.key, slug: mesa.slug, codigo: mesa.codigo, nome: d.name || '', logo: logoSrc || '', review: reviewUrl } : null
     };
@@ -625,7 +628,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       '<footer>' + (o.footerText ? '<p>' + escBr(o.footerText) + '</p>' : '') + reviewHtml + credit + platformBand + '</footer>' +
       ((!cartOn && o.orderButton && wa) ? '<a class="fab" href="' + orderLink(o.orderMessage) + '" target="_blank" rel="noopener">' + ICON.wa + 'Fazer pedido</a>' : '') +
       '<script type="application/json" id="menu-data">' + dataJson + '<\/script>' +
-      '<script>' + (mesa || rast ? 'var makeApi=' + makeApi.toString() + ';' : '') + '(' + siteRuntime.toString() + ')();<\/script></body></html>';
+      '<script>' + (mesa || rast || dlv ? 'var makeApi=' + makeApi.toString() + ';' : '') + '(' + siteRuntime.toString() + ')();<\/script></body></html>';
   }
 
 

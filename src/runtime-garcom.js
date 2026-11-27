@@ -56,6 +56,11 @@ input,textarea{font:inherit;color:inherit}
 .cartbar{padding:12px 14px;background:#fff;border-top:1px solid #dbe5f6}
 .opt{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #eef3fb}.opt span{flex:1}
 textarea{width:100%;border:1px solid #cfd9ec;border-radius:12px;padding:10px;resize:vertical;min-height:60px}
+.alarm{position:sticky;top:0;z-index:8;display:flex;flex-direction:column;gap:6px;padding:8px 12px 0}
+.alarm .al{display:flex;align-items:center;gap:10px;border-radius:14px;padding:12px 14px;font-weight:800;color:#fff;background:#e74c3c;animation:pulse 1s ease-in-out infinite}
+.alarm .al.pr{background:#12a05c}
+.alarm .al span{flex:1}
+.alarm .al button{border:0;border-radius:10px;padding:8px 12px;font-weight:800;background:rgba(255,255,255,.95);color:#14213d}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#06286a;color:#fff;padding:12px 18px;border-radius:12px;z-index:60;font-weight:700;max-width:90vw}
 `;
 
@@ -79,7 +84,7 @@ function garcomRuntime(app, CFG) {
   function toast(m) { var t = d.querySelector('.toast'); if (t) t.remove(); t = el('div', { class: 'toast', text: m }); d.body.appendChild(t); clearTimeout(tt); tt = setTimeout(function () { t.remove(); }, 2600); }
 
   var sound = ls('gc-garcom-sound') === '1', ctx = null, sndEl = null;
-  var S = { mesas: [], offset: 0, online: true, sig: '', seen: null, filter: 'todas', itens: null, itensEm: 0, lastBeep: 0 };
+  var S = { al: {}, mesas: [], offset: 0, online: true, sig: '', seen: null, filter: 'todas', itens: null, itensEm: 0, lastBeep: 0 };
   var timer = null, body = null, dot = null, baseTitle = d.title;
   function sndLabel() { return !sound ? '🔕 Som' : (ctx && ctx.state === 'running' ? '🔔 Som' : '🔇 Liberar som'); }
   function audio() { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state === 'suspended') ctx.resume(); } catch (e) {} }
@@ -87,11 +92,35 @@ function garcomRuntime(app, CFG) {
   function beep() {
     if (!sound) return;
     S.lastBeep = Date.now();
-    try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
+    try { navigator.vibrate && navigator.vibrate([300, 120, 300, 120, 300]); } catch (e) {}
     try {
-      audio(); var o = ctx.createOscillator(), g = ctx.createGain();
-      o.type = 'sine'; o.frequency.value = 880; g.gain.value = 0.2; o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.25);
+      audio();
+      [880, 1175, 880].forEach(function (f, i) {
+        var o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.22;
+        o.type = 'sine'; o.frequency.value = f; o.connect(g); g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.19);
+        o.start(t); o.stop(t + 0.2);
+      });
     } catch (e) {}
+  }
+  // tela sempre ligada enquanto o app está aberto (senão o celular bloqueia e o alarme some)
+  var wl = null;
+  function wake() { try { if (navigator.wakeLock && !d.hidden) navigator.wakeLock.request('screen').then(function (l) { wl = l; }, function () {}); } catch (e) {} }
+  // notificação do sistema (aparece com o app em segundo plano, enquanto o navegador estiver ativo). Funciona sem servidor; para tela bloqueada use o app instalado.
+  function notify(txt) {
+    try { if (d.hidden && window.Notification && Notification.permission === 'granted') new Notification('🛎 ' + CFG.nome, { body: txt, tag: 'garcom', renotify: true, vibrate: [300, 120, 300] }); } catch (e) {}
+  }
+  function notifLabel() { return !window.Notification ? '' : Notification.permission === 'granted' ? '🔔 Avisos: ligados' : Notification.permission === 'denied' ? '🔕 Avisos bloqueados' : '🔔 Ativar avisos'; }
+  function ackAll() { Object.keys(S.al).forEach(function (k) { S.al[k].ack = true; }); drawAlarm(); }
+  function drawAlarm() {
+    var box = d.getElementById('alarm'); if (!box) return;
+    var ks = Object.keys(S.al).filter(function (k) { return !S.al[k].ack; });
+    box.textContent = '';
+    ks.slice(0, 4).forEach(function (k) {
+      var a = S.al[k];
+      box.appendChild(el('div', { class: 'al ' + a.cls, 'data-al': a.mesa }, [el('span', { text: a.txt }), el('button', { type: 'button', text: 'Entendi', onclick: function () { a.ack = true; drawAlarm(); } })]));
+    });
+    if (ks.length > 4) box.appendChild(el('div', { class: 'al', style: 'justify-content:center' }, [el('span', { text: '+ ' + (ks.length - 4) + ' avisos' })]));
   }
   function mins(iso) { var m = Math.max(0, Math.floor((Date.now() + S.offset - new Date(iso).getTime()) / 60000)); return m < 60 ? m + ' min' : Math.floor(m / 60) + 'h' + (m % 60 < 10 ? '0' : '') + (m % 60); }
 
@@ -104,7 +133,8 @@ function garcomRuntime(app, CFG) {
     app.textContent = '';
     dot = el('span', { class: 'dot' + (S.online ? '' : ' off') });
     var snd = sndEl = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sndLabel(), onclick: function () { sound = !sound; ls('gc-garcom-sound', sound ? '1' : '0'); audio(); beep(); snd.textContent = sndLabel(); } });
-    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '🛎 Garçom · ' + CFG.nome }), dot, el('span', { class: 'sp' }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
+    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '🛎 Garçom · ' + CFG.nome }), dot, el('span', { class: 'sp' }), (notifLabel() ? el('button', { class: 'btn sec sm', type: 'button', id: 'notif', text: notifLabel(), onclick: function (e) { var b = e.currentTarget; try { Notification.requestPermission().then(function () { b.textContent = notifLabel(); }); } catch (x) {} } }) : null), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
+    app.appendChild(el('div', { class: 'alarm', id: 'alarm' }));
     app.appendChild(el('div', { class: 'chips', id: 'chips' }));
     body = el('div'); app.appendChild(body);
   }
@@ -139,7 +169,7 @@ function garcomRuntime(app, CFG) {
   /* ---------- mesa (gaveta) ---------- */
   var DR = null;
   function closeDrawer() { if (DR) { DR.ov.remove(); DR = null; } }
-  function openMesa(m) { closeDrawer(); var cur = DR = { id: m.id, ov: el('div', { class: 'ov' }), data: null, sig: '' }; d.body.appendChild(cur.ov); cur.ov.addEventListener('click', function (e) { if (e.target === cur.ov) closeDrawer(); }); drawerLoad(); }
+  function openMesa(m) { Object.keys(S.al).forEach(function (k) { if (S.al[k].mesa === m.numero) S.al[k].ack = true; }); drawAlarm(); closeDrawer(); var cur = DR = { id: m.id, ov: el('div', { class: 'ov' }), data: null, sig: '' }; d.body.appendChild(cur.ov); cur.ov.addEventListener('click', function (e) { if (e.target === cur.ov) closeDrawer(); }); drawerLoad(); }
   function drawerLoad() {
     if (!DR) return Promise.resolve();
     var cur = DR;
@@ -274,17 +304,22 @@ function garcomRuntime(app, CFG) {
       var cached = false; if (r.sem_mudanca && S.last) { r = S.last; cached = true; } else { S.last = r; S.h = r.h; }
       pollFail = 0; if (!cached) S.offset = new Date(r.agora).getTime() - Date.now();
       var wasOff = !S.online; S.online = true; if (dot) dot.className = 'dot';
-      var seen = {}, alerta = false, n = 0;
+      var n = 0, novos = [], vivos = {};
       r.mesas.forEach(function (m) {
         var e = est(m); if (e.chama || e.pronto) n++;
-        seen[m.id] = (e.chama ? m.comanda.chamado_em : '') + '|' + e.pronto;
-        if (S.seen && S.seen[m.id] !== undefined && S.seen[m.id] !== seen[m.id] && (e.chama || e.pronto)) {
-          var antes = S.seen[m.id].split('|'); if ((e.chama && antes[0] !== m.comanda.chamado_em) || e.pronto > Number(antes[1])) alerta = true;
-        }
+        if (e.chama) vivos['c:' + m.id + ':' + m.comanda.chamado_em] = { mesa: m.numero, cls: '', txt: '🔔 Mesa ' + m.numero + ' chamou' + (m.comanda.chamado_por ? ' (' + m.comanda.chamado_por + ')' : '') };
+        if (e.pronto) vivos['p:' + m.id + ':' + e.pronto] = { mesa: m.numero, cls: 'pr', txt: '✅ Mesa ' + m.numero + ': ' + e.pronto + ' pedido' + (e.pronto > 1 ? 's' : '') + ' pronto' + (e.pronto > 1 ? 's' : '') + ' para entregar' };
       });
-      S.seen = seen; if (alerta) beep();
+      // o que já não existe sai da lista; o que é novo toca; o que continua sem "Entendi" insiste a cada 10 s
+      Object.keys(S.al).forEach(function (k) { if (!vivos[k]) delete S.al[k]; });
+      Object.keys(vivos).forEach(function (k) {
+        if (!S.al[k]) { S.al[k] = vivos[k]; S.al[k].ack = false; novos.push(vivos[k].txt); }
+      });
+      if (novos.length) { beep(); notify(novos.join(' · ')); }
+      var pend = Object.keys(S.al).some(function (k) { return !S.al[k].ack; });
+      if (pend && sound && Date.now() - S.lastBeep > 10000) beep();
+      drawAlarm();
       d.title = (n ? '(' + n + ') ' : '') + baseTitle;
-      if (n && sound && Date.now() - S.lastBeep > 30000) beep();
       var sig = JSON.stringify(r.mesas);
       if (sig !== S.sig || wasOff) { S.sig = sig; S.mesas = r.mesas; paint(); }
       if (DR) return drawerLoad();
@@ -295,11 +330,11 @@ function garcomRuntime(app, CFG) {
     });
   }
   function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, pollMs()); }
-  function vis() { if (!d.hidden) refresh(); }
+  function vis() { if (!d.hidden) { wake(); refresh(); } }
   d.addEventListener('visibilitychange', vis);
   d.addEventListener('pointerdown', unlock);
   var tk = setInterval(function () { if (sndEl) sndEl.textContent = sndLabel(); }, 1000);
   var tk2 = setInterval(function () { if (S.mesas.length) S.sig = ''; }, 60000); // atualiza os minutos das mesas
-  shell(); refresh().then(loop, loop);
-  return function stop() { stopped = true; clearTimeout(timer); clearInterval(tk); clearInterval(tk2); d.removeEventListener('visibilitychange', vis); d.removeEventListener('pointerdown', unlock); d.title = baseTitle; closeDrawer(); closePicker(); };
+  shell(); wake(); refresh().then(loop, loop);
+  return function stop() { stopped = true; clearTimeout(timer); clearInterval(tk); clearInterval(tk2); d.removeEventListener('visibilitychange', vis); d.removeEventListener('pointerdown', unlock); d.title = baseTitle; try { wl && wl.release(); } catch (e) {} closeDrawer(); closePicker(); };
 }

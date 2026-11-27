@@ -83,22 +83,40 @@
 
   /* ---------- página inicial da plataforma ---------- */
   function home() {
-    useCss(null); document.title = BRAND.name + ' — cardápio digital e pedidos por mesa';
+    useCss(null); document.title = BRAND.name + ' — cardápio digital, delivery, cozinha e caixa em um só lugar';
+    // a página inicial pode ser encontrada no Google (as demais rotas seguem com noindex)
+    const meta = (n, c) => { let m = document.head.querySelector('meta[name="' + n + '"]'); if (!m) { m = h('meta', { name: n }); document.head.append(m); } m.setAttribute('content', c); };
+    meta('robots', 'index,follow');
+    meta('description', 'Cardápio digital por QR Code, pedidos por mesa, delivery e retirada, tela da cozinha (KDS), caixa, garçom com alertas e pratos em 3D/AR. Sem instalar nada.');
     const inp = h('input', { id: 'go-slug', placeholder: 'seu-restaurante', autocapitalize: 'none', autocomplete: 'off', spellcheck: false, 'aria-label': 'Endereço do seu restaurante' });
     const feat = (ico, t, d) => h('div', { class: 'fcard' }, h('div', { class: 'fico' }, ico), h('h3', {}, t), h('p', {}, d));
+    const step = (n, t, d) => h('div', { class: 'step' }, h('b', {}, n), h('div', {}, h('h3', {}, t), h('p', {}, d)));
+    const wa = String(BRAND.whatsapp || '').replace(/\D/g, '');
+    const cta = wa
+      ? h('a', { class: 'btn big', href: 'https://wa.me/' + wa + '?text=' + encodeURIComponent('Olá! Quero conhecer o ' + BRAND.name + ' para o meu restaurante.'), target: '_blank', rel: 'noopener' }, 'Quero para o meu restaurante')
+      : h('a', { class: 'btn big', href: 'https://igorcabral.dev.br', target: '_blank', rel: 'noopener' }, 'Quero para o meu restaurante');
     root.replaceChildren(
       h('div', { class: 'center hero' }, h('div', { class: 'stack wide' },
         h('img', { class: 'herologo', src: BRAND.logoLight, alt: BRAND.name }),
-        h('h1', {}, 'Cardápio digital, pedidos por mesa e caixa em um só lugar'),
-        h('p', {}, 'O cliente pede pelo celular, a cozinha recebe e o caixa fecha a conta. Simples assim.'),
+        h('h1', {}, 'Cardápio digital, delivery, cozinha e caixa em um só lugar'),
+        h('p', {}, 'O cliente pede pelo celular (na mesa, para entrega ou retirada), a cozinha recebe e imprime, o garçom é avisado e o caixa fecha a conta.'),
         h('form', { class: 'gofrm', onsubmit: e => { e.preventDefault(); const s = slugify(inp.value); if (s) location.href = '/' + s; } },
           h('span', { class: 'pre' }, location.host + '/'), inp, h('button', { class: 'btn', type: 'submit' }, 'Entrar')),
-        h('small', {}, 'Digite o endereço do seu restaurante para acessar o painel da equipe.')), creditEl()),
+        h('small', {}, 'Já é cliente? Digite o endereço do seu restaurante para acessar o painel da equipe.')), creditEl()),
       h('section', { class: 'feat' },
-        feat('📱', 'Cardápio por QR Code', 'Cada mesa tem o seu QR. O cliente abre o cardápio no celular e faz o pedido, sem baixar nada.'),
-        feat('👨‍🍳', 'Pedido direto na cozinha', 'Os pedidos aparecem na tela da cozinha, organizados por mesa.'),
-        feat('💳', 'Caixa e contas por mesa', 'Abra e feche comandas, registre pagamentos e acompanhe o resumo do dia.'),
-        feat('✏️', 'Editor de cardápio', 'Edite itens, preços e fotos e publique para os clientes com um clique.')),
+        feat('📱', 'Cardápio por QR Code', 'Cada mesa tem o seu QR. O cliente abre no celular e pede, sem baixar nada.'),
+        feat('🛵', 'Delivery e retirada', 'O pedido de entrega ou retirada cai direto na cozinha e no caixa, e o cliente acompanha o andamento.'),
+        feat('👨‍🍳', 'Cozinha e bar (KDS)', 'Pedidos por setor, com tempo de preparo, alerta sonoro e impressão do cupom em bobina de 58 ou 80 mm.'),
+        feat('🛎', 'Garçom avisado na hora', 'Chamado da mesa e pedido pronto viram alarme no celular do garçom, que insiste até ele confirmar.'),
+        feat('💳', 'Caixa e contas', 'Divida a conta, registre pagamentos, imprima a conta e acompanhe o resumo do dia.'),
+        feat('🧊', 'Pratos em 3D e realidade aumentada', 'O cliente gira o prato e vê na própria mesa. Você acompanha quais pratos foram mais vistos.')),
+      h('section', { class: 'how' },
+        h('h2', {}, 'Como começar'),
+        h('div', { class: 'steps' },
+          step('1', 'Monte o cardápio', 'Edite itens, preços e fotos no editor e publique com um clique.'),
+          step('2', 'Imprima os QR Codes', 'Um por mesa. Para delivery basta divulgar o link do seu cardápio.'),
+          step('3', 'Receba os pedidos', 'Cozinha, garçom e caixa trabalham no navegador, no celular, tablet ou computador.')),
+        cta),
       footEl());
   }
 
@@ -120,7 +138,7 @@
     if (codigo) { model.options = Object.assign({}, model.options, { cartEnabled: true }); }
     const resto = 2000 - (Date.now() - t0); if (resto > 0) await new Promise(ok => setTimeout(ok, resto));
     const populares = await popP;
-    const html = MenuGen.buildSite(model, codigo ? { populares, rastreio: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug }, mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : { populares, rastreio: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug } });
+    const html = MenuGen.buildSite(model, codigo ? { populares, rastreio: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug }, mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : { populares, rastreio: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug }, entrega: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug } });
     document.open(); document.write(html); document.close();
   }
 

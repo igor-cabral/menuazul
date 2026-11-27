@@ -191,3 +191,13 @@ dialog::backdrop{background:rgba(6,40,106,.5);backdrop-filter:blur(3px)}
 .foot .fl{font-size:.74rem}.foot .fl a{color:#cfe2ff}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 @media(max-width:640px){.top{padding:8px 12px}.nav a{padding:6px 10px;font-size:.86rem}.gofrm .pre{display:none}.feat{margin-top:-30px}}
+
+/* página inicial: como começar */
+.how{max-width:860px;margin:0 auto 40px;padding:0 16px;text-align:center}
+.how h2{font-size:1.4rem;font-weight:900;color:var(--navy);margin-bottom:16px}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;text-align:left;margin-bottom:22px}
+.step{display:flex;gap:12px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+.step>b{flex:none;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#0264f4;color:#fff;font-weight:900}
+.step h3{font-size:.98rem;font-weight:900;color:var(--navy);margin-bottom:3px}
+.step p{color:var(--mut);font-size:.9rem;line-height:1.4}
+.how .btn.big{display:inline-block;text-decoration:none;padding:14px 26px;font-size:1.05rem;border-radius:14px}
