@@ -41,6 +41,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .it .n{font-size:1.1rem;font-weight:600}
 .it .ad{color:#c9cdd3;font-size:.92rem;margin-left:26px}
 .it .ob{margin:3px 0 0 26px;background:#4a3a12;color:#ffd77a;border-radius:7px;padding:3px 9px;font-size:.92rem;font-weight:600;display:inline-block}
+.dlv{background:#12304a;border:1px solid #1f5a8a;border-radius:10px;padding:8px 11px;font-size:.92rem;line-height:1.4}.dlv b{color:#8fd0ff}
 .pobs{background:#4a3a12;color:#ffd77a;border-radius:8px;padding:6px 10px;font-weight:600}
 .acts{display:flex;gap:8px;margin-top:2px}
 .acts .btn{flex:1;padding:13px 10px;font-size:1rem}
@@ -73,20 +74,29 @@ function kdsRuntime(app, CFG) {
   /* ---------- impressão do pedido (bobina 80 mm) ---------- */
   // Ligada, imprime cada pedido NOVO que chega (uma vez só). Para imprimir sem a janela de confirmação, abra o Chrome/Edge do computador da cozinha
   // com o atalho "--kiosk-printing" e deixe a impressora da cozinha como padrão.
-  var printOn = ls('gc-kds-print') === '1', printed = [], printQ = [], printing = false, prnEl = null;
+  var paper = ls('gc-kds-paper') === '58' ? 58 : 80, printOn = ls('gc-kds-print') === '1', printed = [], printQ = [], printing = false, prnEl = null;
   try { printed = JSON.parse(ls('gc-kds-printed') || '[]'); } catch (e) {}
   function markPrinted(ids) { ids.forEach(function (i) { if (printed.indexOf(i) < 0) printed.push(i); }); printed = printed.slice(-400); ls('gc-kds-printed', JSON.stringify(printed)); }
   function esc(x) { return String(x == null ? '' : x).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function canalTxt(p) { return p.canal === 'delivery' ? 'ENTREGA' : p.canal === 'retirada' ? 'RETIRADA' : 'MESA ' + p.mesa; }
+  function canalIco(p) { return p.canal === 'delivery' ? '🛵 ' : p.canal === 'retirada' ? '🛍 ' : ''; }
+  function fone(t) { t = String(t || '').replace(/\D/g, ''); return t.length === 11 ? '(' + t.slice(0, 2) + ') ' + t.slice(2, 7) + '-' + t.slice(7) : t.length === 10 ? '(' + t.slice(0, 2) + ') ' + t.slice(2, 6) + '-' + t.slice(6) : t; }
+  function pagTxt(c) { return c && c.pagamento ? c.pagamento + (c.troco ? ' (troco p/ ' + c.troco + ')' : '') : ''; }
   function ticketHtml(p) {
     var t = new Date(p.criado_em), hm = (t.getHours() < 10 ? '0' : '') + t.getHours() + ':' + (t.getMinutes() < 10 ? '0' : '') + t.getMinutes();
-    var h = (p.setor ? '<div class="c">' + esc(String(p.setor).toUpperCase()) + '</div>' : '') + '<div class="c big">MESA ' + esc(p.mesa) + '</div><div class="c">Pedido #' + p.numero + ' · ' + hm + '</div>' + (p.cliente ? '<div class="c">' + esc(p.cliente) + '</div>' : '') + '<hr>';
+    var h = (p.setor ? '<div class="c">' + esc(String(p.setor).toUpperCase()) + '</div>' : '') + '<div class="c big">' + esc(canalTxt(p)) + '</div><div class="c">Pedido #' + p.numero + ' · ' + hm + '</div>' + (p.cliente ? '<div class="c">' + esc(p.cliente) + '</div>' : '') + '<hr>';
+    var ct = p.contato;
+    if (p.canal && p.canal !== 'mesa' && ct) {
+      h += (ct.tel ? '<div>Tel: ' + esc(fone(ct.tel)) + '</div>' : '') + (ct.endereco ? '<div>End.: ' + esc(ct.endereco) + '</div>' : '') + (pagTxt(ct) ? '<div>Pgto: ' + esc(pagTxt(ct)) + '</div>' : '') + '<hr>';
+    }
     p.itens.forEach(function (i) {
       h += '<div class="it"><b>' + i.qtd + '×</b> ' + esc(i.nome + (i.variante ? ' · ' + i.variante : '')) + '</div>';
       (i.adicionais || []).forEach(function (a) { h += '<div class="ad">+ ' + esc(a.l) + '</div>'; });
       if (i.obs) h += '<div class="ad">!! ' + esc(i.obs) + '</div>';
     });
     if (p.obs) h += '<hr><div>OBS: ' + esc(p.obs) + '</div>';
-    return '<html><head><meta charset="utf-8"><style>@page{size:80mm auto;margin:2mm}body{font:bold 15px/1.3 monospace;width:72mm;margin:0;color:#000}.c{text-align:center}.big{font-size:28px}.it{font-size:17px;margin-top:6px}.ad{padding-left:16px;font-size:14px}hr{border:0;border-top:2px dashed #000;margin:8px 0}.f{text-align:center;font-size:11px;margin-top:8px}</style></head><body>' + h + '<hr><div class="f">' + esc(CFG.nome) + '</div></body></html>';
+    var w = paper === 58 ? ['58mm', '50mm', '13px', '22px', '15px', '12px'] : ['80mm', '72mm', '15px', '28px', '17px', '14px'];
+    return '<html><head><meta charset="utf-8"><style>@page{size:' + w[0] + ' auto;margin:2mm}body{font:bold ' + w[2] + '/1.3 monospace;width:' + w[1] + ';margin:0;color:#000}.c{text-align:center}.big{font-size:' + w[3] + '}.it{font-size:' + w[4] + ';margin-top:6px}.ad{padding-left:16px;font-size:' + w[5] + '}hr{border:0;border-top:2px dashed #000;margin:8px 0}.f{text-align:center;font-size:11px;margin-top:8px}</style></head><body>' + h + '<hr><div class="f">' + esc(CFG.nome) + '</div></body></html>';
   }
   function drainPrint() {
     if (printing || !printQ.length) return;
@@ -96,6 +106,7 @@ function kdsRuntime(app, CFG) {
     setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) {} setTimeout(function () { f.remove(); printing = false; drainPrint(); }, 1800); }, 150);
   }
   function printTicket(p) { printQ.push(ticketHtml(p)); drainPrint(); }
+  function papLabel() { return '📄 ' + paper + ' mm'; }
   function prnLabel() { return S.limitado ? '🖨 Indisponível (mensalidade)' : printOn ? '🖨 Impressão: ligada' : '🖨 Impressão: desligada'; }
 
   // lembrete sonoro a cada 30 s enquanto houver pedido novo parado, e aviso se o som estiver bloqueado pelo navegador
@@ -128,16 +139,23 @@ function kdsRuntime(app, CFG) {
       return el('div', { class: 'it' }, kids);
     });
     var nx = NEXT[p.status], pv = PREV[p.status];
+    if (p.status === 'pronto' && p.canal === 'delivery') nx = ['entregue', 'Saiu p/ entrega ✓'];
+    else if (p.status === 'pronto' && p.canal === 'retirada') nx = ['entregue', 'Retirado ✓'];
+    var ct = p.contato, dl = (p.canal && p.canal !== 'mesa' && ct) ? el('div', { class: 'dlv' }, [
+      el('div', {}, [el('b', { text: 'Tel ' }), fone(ct.tel)]),
+      ct.endereco ? el('div', {}, [el('b', { text: 'End. ' }), ct.endereco]) : null,
+      pagTxt(ct) ? el('div', {}, [el('b', { text: 'Pgto ' }), pagTxt(ct)]) : null]) : null;
     return el('div', { class: cls, 'data-id': p.id, style: '--c:' + color }, [
-      el('div', { class: 'ch' }, [el('span', { class: 'mesa', text: 'Mesa ' + p.mesa }), el('span', { class: 'num', text: '#' + p.numero }), (!S.setor && S.setores > 1 && p.setor) ? el('span', { class: 'tm', text: p.setor }) : null, el('span', { class: 'tm', 'data-t': p.id, text: '⏱ ' + fmt(a) })]),
+      el('div', { class: 'ch' }, [el('span', { class: 'mesa', text: p.canal === 'delivery' || p.canal === 'retirada' ? canalIco(p) + (p.canal === 'delivery' ? 'Entrega' : 'Retirada') : 'Mesa ' + p.mesa }), el('span', { class: 'num', text: '#' + p.numero }), (!S.setor && S.setores > 1 && p.setor) ? el('span', { class: 'tm', text: p.setor }) : null, el('span', { class: 'tm', 'data-t': p.id, text: '⏱ ' + fmt(a) })]),
       p.cliente ? el('div', { class: 'who', text: 'Pedido de ' + p.cliente }) : null,
+      dl,
       el('div', { class: 'its' }, items),
       p.obs ? el('div', { class: 'pobs', text: '📝 ' + p.obs }) : null,
       el('div', { class: 'acts' }, [
         pv ? el('button', { class: 'btn sec', type: 'button', text: pv[1], onclick: function () { setStatus(p, pv[0]); } }) : null,
         el('button', { class: 'btn', type: 'button', text: nx[1], onclick: function () { setStatus(p, nx[0]); } })]),
       el('button', { class: 'x', type: 'button', 'data-print': p.numero, text: '🖨 Imprimir', onclick: function () { printTicket(p); } }),
-      el('button', { class: 'x', type: 'button', text: 'Cancelar pedido', onclick: function () { if (confirm('Cancelar o pedido #' + p.numero + ' da mesa ' + p.mesa + '?')) setStatus(p, 'cancelado'); } })
+      el('button', { class: 'x', type: 'button', text: 'Cancelar pedido', onclick: function () { if (confirm((p.canal && p.canal !== 'mesa' ? 'Recusar/cancelar o pedido #' + p.numero + ' de ' + (p.cliente || 'delivery') : 'Cancelar o pedido #' + p.numero + ' da mesa ' + p.mesa) + '?')) setStatus(p, 'cancelado'); } })
     ]);
   }
   function board() {
@@ -149,7 +167,7 @@ function kdsRuntime(app, CFG) {
     app.appendChild(el('div', { class: 'top' }, [el('h1', { text: (S.setor && /bar|bebida|drink/i.test(S.setor.nome) ? '🍹 ' : '👨‍🍳 ') + (S.setor ? S.setor.nome : 'Cozinha') + ' · ' + CFG.nome }), connEl, el('span', { class: 'sp' }), prnEl = el('button', { class: 'btn sec sm', type: 'button', id: 'prn', title: 'Imprime cada pedido novo (bobina 80 mm). Para imprimir sem a janela de confirmação, abra o navegador com --kiosk-printing.', text: prnLabel(), onclick: function () {
       if (S.limitado) { prnEl.textContent = prnLabel(); return; } // indisponível: mensalidade em atraso
       printOn = !printOn; ls('gc-kds-print', printOn ? '1' : '0'); if (printOn) markPrinted(S.pedidos.map(function (x) { return x.id; })); prnEl.textContent = prnLabel();
-    } }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
+    } }), el('button', { class: 'btn sec sm', type: 'button', id: 'pap', title: 'Largura da bobina da impressora', text: papLabel(), onclick: function (e) { paper = paper === 80 ? 58 : 80; ls('gc-kds-paper', String(paper)); e.currentTarget.textContent = papLabel(); } }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
     var cols = COLS.map(function (c) {
       var list = S.pedidos.filter(function (p) { return p.status === c[0]; });
       return el('section', { class: 'col', style: '--c:' + c[2], 'data-col': c[0] }, [

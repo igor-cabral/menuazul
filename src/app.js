@@ -534,6 +534,7 @@
       checkField('Selo "🔥 Mais pedido" (automático)', 'options.showPopular', 'Marca os 2 itens mais pedidos de cada categoria nos últimos 30 dias. Só aparece no cardápio online, quando há histórico suficiente.'),
       section('Carrinho de pedidos'),
       checkField('Ativar carrinho', 'options.cartEnabled', 'O cliente monta o pedido e envia pronto pelo WhatsApp. Precisa do WhatsApp preenchido.'),
+      checkField('Receber delivery e retirada no sistema', 'options.entregaSistema', 'O pedido cai direto na cozinha (KDS) e no caixa, com impressão, e o cliente acompanha o andamento. Vale só no cardápio publicado na plataforma. Taxa de entrega, pedido mínimo e pagamentos abaixo são conferidos no servidor.'),
       h('div', { class: 'f' }, h('span', { class: 'f-l' }, 'Como o cliente recebe'),
         checkField('Entrega', 'options.typeDelivery'), checkField('Retirada no local', 'options.typePickup'), checkField('Consumo no local (mesa)', 'options.typeDinein')),
       h('div', { class: 'two' },

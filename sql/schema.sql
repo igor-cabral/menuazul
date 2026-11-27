@@ -98,7 +98,21 @@ create table if not exists comandas (
   desconto numeric(10,2) not null default 0 check (desconto >= 0),
   conta_pedida boolean not null default false
 );
-create unique index if not exists comanda_aberta_unica on comandas (mesa_id) where status = 'aberta';
+-- delivery e retirada: a mesa do salão continua com UMA comanda aberta por mesa; pedidos de delivery/retirada usam uma mesa virtual
+-- (oculta, ativa = false) e uma comanda por pedido, com os dados do cliente em "contato" e a taxa de entrega à parte
+alter table mesas add column if not exists tipo text not null default 'mesa';
+alter table mesas drop constraint if exists mesas_tipo_check;
+alter table mesas add constraint mesas_tipo_check check (tipo in ('mesa','delivery','retirada'));
+alter table comandas add column if not exists canal text not null default 'mesa';
+alter table comandas drop constraint if exists comandas_canal_check;
+alter table comandas add constraint comandas_canal_check check (canal in ('mesa','delivery','retirada'));
+alter table comandas add column if not exists contato jsonb;
+alter table comandas add column if not exists taxa_entrega numeric(10,2) not null default 0;
+alter table comandas drop constraint if exists comandas_taxa_entrega_check;
+alter table comandas add constraint comandas_taxa_entrega_check check (taxa_entrega >= 0);
+drop index if exists comanda_aberta_unica;
+create unique index comanda_aberta_unica on comandas (mesa_id) where status = 'aberta' and canal = 'mesa';
+create index if not exists comandas_canal_aberta on comandas (mesa_id) where status = 'aberta' and canal <> 'mesa';
 -- cliente chamou o garçom (fica até o garçom atender)
 alter table comandas add column if not exists chamado_em timestamptz;
 alter table comandas add column if not exists chamado_por text;
@@ -367,13 +381,13 @@ language sql stable security definer set search_path = public, pg_temp as $$
   ),
   pg as (select coalesce(sum(valor), 0)::numeric(12,2) as pago from pagamentos where comanda_id = p_comanda),
   t as (
-    select s.sub, c.taxa_servico, c.desconto, pg.pago, round(s.sub * c.taxa_servico / 100, 2) as taxa
+    select s.sub, c.taxa_servico, c.desconto, c.taxa_entrega, pg.pago, round(s.sub * c.taxa_servico / 100, 2) as taxa
     from c, s, pg
   )
   select jsonb_build_object(
-    'subtotal', sub, 'taxa_pct', taxa_servico, 'taxa', taxa, 'desconto', desconto,
-    'total', greatest(sub + taxa - desconto, 0), 'pago', pago,
-    'saldo', greatest(sub + taxa - desconto, 0) - pago
+    'subtotal', sub, 'taxa_pct', taxa_servico, 'taxa', taxa, 'desconto', desconto, 'taxa_entrega', taxa_entrega,
+    'total', greatest(sub + taxa + taxa_entrega - desconto, 0), 'pago', pago,
+    'saldo', greatest(sub + taxa + taxa_entrega - desconto, 0) - pago
   ) from t
 $$;
 
@@ -515,7 +529,7 @@ begin
   end if;
   return _delta(jsonb_build_object(
     'mesa', jsonb_build_object('numero', m.numero),
-    'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'conta_pedida', c.conta_pedida, 'chamado', c.chamado_em is not null),
+    'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'conta_pedida', c.conta_pedida, 'chamado', c.chamado_em is not null, 'canal', c.canal),
     'eu', jsonb_build_object('id', cl.id, 'nome', cl.nome),
     'clientes', _clientes_json(c.id), 'pedidos', _pedidos_json(c.id), 'totais', _totais(c.id)), p_hash);
 end $$;
@@ -609,7 +623,7 @@ begin
     'pedidos', coalesce((
     select jsonb_agg(jsonb_build_object(
       'id', p.id, 'numero', p.numero, 'status', p.status, 'criado_em', p.criado_em, 'obs', p.obs,
-      'mesa', m.numero, 'cliente', cl.nome, 'setor', st.nome,
+      'mesa', m.numero, 'cliente', cl.nome, 'setor', st.nome, 'canal', c.canal, 'contato', c.contato,
       'itens', (select coalesce(jsonb_agg(jsonb_build_object(
                   'nome', i.nome, 'variante', i.variante, 'adicionais', i.adicionais, 'qtd', i.qtd, 'obs', i.obs
                 ) order by i.ordem), '[]'::jsonb) from pedido_itens i where i.pedido_id = p.id)
@@ -695,7 +709,7 @@ begin
   return _delta(jsonb_build_object(
     'agora', now(),
     'comanda', jsonb_build_object('id', c.id, 'status', c.status, 'aberta_em', c.aberta_em, 'encerrada_em', c.encerrada_em,
-                                  'conta_pedida', c.conta_pedida, 'mesa', m.numero),
+                                  'conta_pedida', c.conta_pedida, 'mesa', m.numero, 'canal', c.canal, 'contato', c.contato),
     'clientes', _clientes_json(c.id), 'pedidos', _pedidos_json(c.id), 'totais', _totais(c.id),
     'pagamentos', (select coalesce(jsonb_agg(jsonb_build_object('id', g.id, 'metodo', g.metodo, 'valor', g.valor, 'nome', g.nome, 'em', g.em)
                    order by g.em), '[]'::jsonb) from pagamentos g where g.comanda_id = c.id)), p_hash);
@@ -798,7 +812,7 @@ begin
     select jsonb_agg(jsonb_build_object('id', m.id, 'numero', m.numero, 'codigo', m.codigo, 'ativa', m.ativa,
       'aberta', exists (select 1 from comandas c where c.mesa_id = m.id and c.status = 'aberta'))
       order by nullif(regexp_replace(m.numero, '\D', '', 'g'), '')::int nulls last, m.numero)
-    from mesas m where m.restaurante_id = s.restaurante_id), '[]'::jsonb);
+    from mesas m where m.restaurante_id = s.restaurante_id and m.tipo = 'mesa'), '[]'::jsonb);
 end $$;
 
 create or replace function admin_criar_mesas(p_token uuid, p_qtd int) returns jsonb
@@ -1712,6 +1726,95 @@ begin
     set aberturas = uso_3d.aberturas + excluded.aberturas, ar = uso_3d.ar + excluded.ar;
 end $$;
 
+
+-- ---------- delivery e retirada (pedido pelo cardápio público, sem mesa) ----------
+-- preço digitado no editor ("5,00", "R$ 5.50", "1.200,00") -> número; texto inválido vale 0
+create or replace function _preco_txt(p text) returns numeric
+language plpgsql immutable set search_path = public, pg_temp as $$
+declare s text := regexp_replace(coalesce(p, ''), '^\s*R\$\s*|\s', '', 'gi');
+begin
+  if s = '' or s !~ '^\d[\d.,]*$' then return 0; end if;
+  if position(',' in s) > 0 then s := replace(replace(s, '.', ''), ',', '.'); end if;
+  return greatest(s::numeric, 0);
+exception when others then return 0;
+end $$;
+
+-- a mesa virtual de cada canal (criada na primeira vez; fica oculta do salão porque ativa = false)
+create or replace function _mesa_virtual(p_rest uuid, p_canal text) returns uuid
+language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare v_id uuid;
+begin
+  select id into v_id from mesas where restaurante_id = p_rest and tipo = p_canal;
+  if v_id is null then
+    insert into mesas (restaurante_id, numero, codigo, ativa, tipo) values (p_rest, '~' || p_canal, _novo_codigo(), false, p_canal)
+    on conflict (restaurante_id, numero) do nothing;
+    select id into v_id from mesas where restaurante_id = p_rest and tipo = p_canal;
+  end if;
+  return v_id;
+end $$;
+
+-- O restaurante liga "Receber pedidos de delivery/retirada no sistema" no editor. Taxa de entrega, pedido mínimo, formas de pagamento
+-- e os tipos aceitos vêm do cardápio publicado (nunca do navegador do cliente).
+create or replace function publico_pedir_delivery(p_slug text, p_canal text, p_nome text, p_tel text, p_endereco text, p_pagto text, p_troco text,
+                                                  p_itens jsonb, p_obs text default null) returns jsonb
+language plpgsql security definer set search_path = public, extensions, pg_temp as $$
+declare r restaurantes; o jsonb; v_nome text := left(trim(coalesce(p_nome, '')), 40); v_tel text := regexp_replace(coalesce(p_tel, ''), '\D', '', 'g');
+  v_end text := left(trim(coalesce(p_endereco, '')), 200); v_pag text := left(trim(coalesce(p_pagto, '')), 40); v_troco text := left(trim(coalesce(p_troco, '')), 20);
+  v_fee numeric := 0; v_min numeric; v_pays text[]; c comandas; cl clientes; v_res jsonb; v_sub numeric;
+begin
+  r := _rest_publico(p_slug);
+  o := coalesce(r.cardapio -> 'options', '{}'::jsonb);
+  if coalesce(o ->> 'entregaSistema', '') <> 'true' then raise exception 'Este restaurante ainda não recebe pedidos por aqui.'; end if;
+  if p_canal is null or p_canal not in ('delivery', 'retirada') then raise exception 'Escolha entrega ou retirada'; end if;
+  if p_canal = 'delivery' and coalesce(o ->> 'typeDelivery', 'true') = 'false' then raise exception 'Este restaurante não faz entregas.'; end if;
+  if p_canal = 'retirada' and coalesce(o ->> 'typePickup', 'true') = 'false' then raise exception 'Este restaurante não tem retirada no local.'; end if;
+  if v_nome = '' then raise exception 'Informe seu nome'; end if;
+  if length(v_tel) < 10 or length(v_tel) > 13 then raise exception 'Informe o telefone com DDD'; end if;
+  if p_canal = 'delivery' then
+    if length(v_end) < 8 then raise exception 'Informe o endereço de entrega'; end if;
+    v_fee := _preco_txt(o ->> 'deliveryFee');
+  else v_end := null; end if;
+  v_pays := array(select lower(trim(x)) from unnest(string_to_array(coalesce(o ->> 'payments', ''), ',')) x where trim(x) <> '');
+  if coalesce(array_length(v_pays, 1), 0) > 0 and lower(v_pag) <> all (v_pays) then raise exception 'Escolha a forma de pagamento'; end if;
+  v_min := _preco_txt(o ->> 'minOrder');
+  -- contra abuso: poucos pedidos por telefone e um teto por restaurante
+  if (select count(*) from comandas c2 join mesas m2 on m2.id = c2.mesa_id
+       where m2.restaurante_id = r.id and c2.canal <> 'mesa' and c2.contato ->> 'tel' = v_tel and c2.aberta_em > now() - interval '30 minutes') >= 3 then
+    raise exception 'Você já enviou pedidos há pouco. Aguarde ou chame o restaurante.';
+  end if;
+  if (select count(*) from comandas c2 join mesas m2 on m2.id = c2.mesa_id
+       where m2.restaurante_id = r.id and c2.canal <> 'mesa' and c2.aberta_em > now() - interval '10 minutes') >= 40 then
+    raise exception 'Muitos pedidos no momento. Tente de novo em instantes.';
+  end if;
+
+  insert into comandas (mesa_id, canal, taxa_servico, taxa_entrega, contato)
+  values (_mesa_virtual(r.id, p_canal), p_canal, 0, v_fee,
+          jsonb_build_object('nome', v_nome, 'tel', v_tel, 'endereco', v_end, 'pagamento', nullif(v_pag, ''), 'troco', nullif(v_troco, '')))
+  returning * into c;
+  insert into clientes (comanda_id, nome) values (c.id, v_nome) returning * into cl;
+  v_res := _criar_pedido(c.id, cl.id, p_itens, p_obs);
+  v_sub := (_totais(c.id) ->> 'subtotal')::numeric;
+  if v_min > 0 and v_sub < v_min then raise exception 'Pedido mínimo: R$ %', replace(to_char(v_min, 'FM999990D00'), '.', ','); end if;
+  return jsonb_build_object('cliente_token', cl.token, 'numero', v_res -> 'numero', 'pedidos', v_res -> 'pedidos', 'totais', _totais(c.id), 'canal', p_canal);
+end $$;
+
+-- caixa: pedidos de delivery e retirada em aberto
+create or replace function caixa_delivery(p_token uuid, p_hash text default null) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s staff_sessoes;
+begin
+  s := _sessao(p_token, array['caixa','admin']);
+  return _delta(jsonb_build_object('agora', now(), 'pedidos', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', c.id, 'canal', c.canal, 'aberta_em', c.aberta_em, 'contato', c.contato,
+      'pendentes', (select count(*) from pedidos p where p.comanda_id = c.id and p.status in ('novo','preparando')),
+      'prontos', (select count(*) from pedidos p where p.comanda_id = c.id and p.status = 'pronto'),
+      'numeros', (select coalesce(jsonb_agg(p.numero order by p.numero), '[]'::jsonb) from pedidos p where p.comanda_id = c.id and p.status <> 'cancelado'),
+      'totais', _totais(c.id)) order by c.aberta_em)
+    from comandas c join mesas m on m.id = c.mesa_id
+    where m.restaurante_id = s.restaurante_id and c.status = 'aberta' and c.canal <> 'mesa'), '[]'::jsonb)), p_hash);
+end $$;
+
 -- ---------- permissões ----------
 alter table plataforma_admins enable row level security;
 alter table restaurantes enable row level security;
@@ -1744,7 +1847,7 @@ grant execute on function
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
   admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), admin_cobranca(uuid), admin_termos_status(uuid), admin_termos_aceitar(uuid, text), _foto_ok(text), _modelo_ok(text), publico_3d_evento(text, text, text),
-  publico_chamar_garcom(uuid), publico_populares(text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid, text), garcom_mesa(uuid, uuid, text), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
+  publico_chamar_garcom(uuid), publico_populares(text), publico_pedir_delivery(text, text, text, text, text, text, text, jsonb, text), caixa_delivery(uuid, text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid, text), garcom_mesa(uuid, uuid, text), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
 to anon, authenticated;
 
 grant execute on function

@@ -91,8 +91,8 @@ function caixaRuntime(app, CFG) {
   function num(s) { return parseFloat(String(s).replace(/\./g, '').replace(',', '.')); }
   function inp(n) { return (Math.round(Number(n) * 100) / 100).toFixed(2).replace('.', ','); }
   var METODOS = [['dinheiro', 'Dinheiro'], ['pix', 'Pix'], ['credito', 'Crédito'], ['debito', 'Débito'], ['outro', 'Outro']];
-  var token = CFG.token, sound = ls('gc-caixa-sound') === '1';
-  var S = { tab: 'mesas', mesas: [], cfg: {}, offset: 0, online: true, sig: '', seen: null, resumo: null, open: null };
+  var token = CFG.token, sound = ls('gc-caixa-sound') === '1', paper = ls('gc-caixa-paper') === '58' ? 58 : 80;
+  var S = { tab: 'mesas', dl: [], dlSeen: null, mesas: [], cfg: {}, offset: 0, online: true, sig: '', seen: null, resumo: null, open: null };
   var timer = null, ctx = null, view = null;
 
   // título da aba com a contagem de contas pedidas, lembrete sonoro a cada 30 s enquanto houver conta pedida e aviso se o som estiver bloqueado
@@ -115,18 +115,35 @@ function caixaRuntime(app, CFG) {
 
   /* ---------- telas ---------- */
   var body = null, dot = null;
+  function dlLabel() { return 'Delivery' + (S.dl.length ? ' (' + S.dl.length + ')' : ''); }
   function shell() {
     app.textContent = '';
     dot = el('span', { class: 'dot' + (S.online ? '' : ' off') });
     var snd = sndEl = el('button', { class: 'btn sec sm', type: 'button', id: 'snd', text: sndLabel(), onclick: function () { sound = !sound; ls('gc-caixa-sound', sound ? '1' : '0'); beep(); snd.textContent = sndLabel(); } });
-    var tabs = el('div', { class: 'tabs' }, [['mesas', 'Mesas'], ['resumo', 'Resumo do dia']].map(function (t) {
+    var tabs = el('div', { class: 'tabs' }, [['mesas', 'Mesas'], ['delivery', dlLabel()], ['resumo', 'Resumo do dia']].map(function (t) {
       return el('button', { type: 'button', class: S.tab === t[0] ? 'on' : '', 'data-tab': t[0], text: t[1], onclick: function () { S.tab = t[0]; shell(); if (t[0] === 'resumo') loadResumo(); else paint(); } });
     }));
-    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '💳 ' + CFG.nome }), dot, tabs, el('span', { class: 'sp' }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
+    app.appendChild(el('div', { class: 'top' }, [el('h1', { text: '💳 ' + CFG.nome }), dot, tabs, el('span', { class: 'sp' }), el('button', { class: 'btn sec sm', type: 'button', id: 'pap', title: 'Largura da bobina da impressora', text: '📄 ' + paper + ' mm', onclick: function (e) { paper = paper === 80 ? 58 : 80; ls('gc-caixa-paper', String(paper)); e.currentTarget.textContent = '📄 ' + paper + ' mm'; } }), snd, el('button', { class: 'btn sec sm', type: 'button', text: 'Sair', onclick: function () { CFG.logout(); } })]));
     body = el('div'); app.appendChild(body);
     if (S.open) { var o = S.open; S.open = null; openDrawer(o); }
   }
+  function paintDl() {
+    var tb = d.querySelector('[data-tab="delivery"]'); if (tb) tb.textContent = dlLabel();
+    if (S.tab !== 'delivery' || !body) return;
+    body.textContent = '';
+    if (!S.dl.length) { body.appendChild(el('p', { class: 'mt', style: 'padding:30px;text-align:center', text: 'Nenhum pedido de delivery ou retirada em aberto.' })); return; }
+    body.appendChild(el('div', { class: 'grid' }, S.dl.map(function (c) {
+      var ct = c.contato || {}, b = [];
+      if (Number(c.prontos)) b.push(el('span', { class: 'b-pronto', text: c.prontos + ' pronto' + (c.prontos > 1 ? 's' : '') }));
+      if (Number(c.pendentes)) b.push(el('span', { class: 'b-pend', text: c.pendentes + ' na cozinha' }));
+      if (Number(c.totais.saldo) < 0.01) b.push(el('span', { class: 'b-pronto', text: 'Pago' }));
+      return el('button', { type: 'button', class: 'mesa ' + (Number(c.prontos) ? 'conta' : 'aberta'), 'data-dl': (c.numeros || [])[0] || '', onclick: function () { openDrawer(c.id); } }, [
+        el('div', { class: 'nm', text: (c.canal === 'delivery' ? '🛵 ' : '🛍 ') + (ct.nome || '') }), el('div', { class: 'vl', text: money(c.totais.total) }),
+        el('div', { class: 'mt', text: '#' + (c.numeros || []).join(', #') + ' · ' + mins(c.aberta_em) }), el('div', { class: 'bdg' }, b)]);
+    })));
+  }
   function paint() {
+    if (S.tab === 'delivery') { paintDl(); return; }
     if (S.tab !== 'mesas' || !body) return;
     body.textContent = '';
     body.appendChild(el('div', { class: 'grid' }, S.mesas.map(function (m) {
@@ -185,15 +202,19 @@ function caixaRuntime(app, CFG) {
   function reload() { return drawerLoad(true).then(refresh); }
 
   function drawerRender() {
-    var r = DR.data, c = r.comanda, t = r.totais, dr = DR.dr, closed = c.status !== 'aberta';
+    var r = DR.data, c = r.comanda, t = r.totais, dr = DR.dr, closed = c.status !== 'aberta', dlv = c.canal === 'delivery' || c.canal === 'retirada', ct = c.contato || {};
     // preserva o que está sendo digitado
     var keep = {};
     [].forEach.call(dr.querySelectorAll('input,select'), function (i) { if (i.id) keep[i.id] = { v: i.value, f: d.activeElement === i }; });
     dr.textContent = '';
-    dr.appendChild(el('div', { class: 'dh' }, [el('h2', { text: 'Mesa ' + c.mesa }), el('span', { class: 'mt', text: closed ? 'Encerrada' : 'Aberta há ' + mins(c.aberta_em) }), el('button', { class: 'x', type: 'button', 'aria-label': 'Fechar', text: '✕', onclick: closeDrawer })]));
-    if (c.conta_pedida && !closed) dr.appendChild(el('div', { class: 'warn' }, [el('span', { text: '🔔 O cliente pediu a conta' }), el('button', { class: 'btn sec sm', type: 'button', text: 'Ok', onclick: function () { api('caixa_limpar_aviso', { p_token: token, p_comanda: c.id }).then(reload, fail); } })]));
+    dr.appendChild(el('div', { class: 'dh' }, [el('h2', { text: dlv ? (c.canal === 'delivery' ? '🛵 Entrega' : '🛍 Retirada') + ' · ' + (ct.nome || '') : 'Mesa ' + c.mesa }), el('span', { class: 'mt', text: closed ? 'Encerrada' : 'Aberta há ' + mins(c.aberta_em) }), el('button', { class: 'x', type: 'button', 'aria-label': 'Fechar', text: '✕', onclick: closeDrawer })]));
+    if (dlv) dr.appendChild(el('div', { class: 'sec' }, [el('h3', { text: 'Cliente' }), el('div', { class: 'pay' }, [
+      el('div', {}, [el('b', { text: 'Telefone: ' }), el('a', { href: 'https://wa.me/55' + String(ct.tel || '').replace(/^55/, ''), target: '_blank', rel: 'noopener', text: fone(ct.tel) + ' (abrir WhatsApp)' })]),
+      ct.endereco ? el('div', {}, [el('b', { text: 'Endereço: ' }), ct.endereco]) : null,
+      ct.pagamento ? el('div', {}, [el('b', { text: 'Pagamento: ' }), ct.pagamento + (ct.troco ? ' · troco para ' + ct.troco : '')]) : null])]));
+    if (c.conta_pedida && !closed && !dlv) dr.appendChild(el('div', { class: 'warn' }, [el('span', { text: '🔔 O cliente pediu a conta' }), el('button', { class: 'btn sec sm', type: 'button', text: 'Ok', onclick: function () { api('caixa_limpar_aviso', { p_token: token, p_comanda: c.id }).then(reload, fail); } })]));
 
-    dr.appendChild(el('div', { class: 'sec' }, [el('h3', { text: 'Pessoas na mesa' }), el('div', { class: 'chips' }, r.clientes.length ? r.clientes.map(function (p) { return el('span', { class: 'pill', text: p.nome + ' · ' + money(p.subtotal) }); }) : [el('span', { class: 'mt', text: 'Ninguém entrou ainda' })])]));
+    if (!dlv) dr.appendChild(el('div', { class: 'sec' }, [el('h3', { text: 'Pessoas na mesa' }), el('div', { class: 'chips' }, r.clientes.length ? r.clientes.map(function (p) { return el('span', { class: 'pill', text: p.nome + ' · ' + money(p.subtotal) }); }) : [el('span', { class: 'mt', text: 'Ninguém entrou ainda' })])]));
 
     var ps = el('div', { class: 'sec' }, [el('h3', { text: 'Pedidos' })]);
     if (!r.pedidos.length) ps.appendChild(el('p', { class: 'mt', text: 'Nenhum pedido.' }));
@@ -213,6 +234,7 @@ function caixaRuntime(app, CFG) {
 
     var rows = [el('div', { class: 'row' }, [el('span', { text: 'Consumo' }), el('span', { text: money(t.subtotal) })])];
     if (Number(t.taxa)) rows.push(el('div', { class: 'row' }, [el('span', { text: 'Serviço (' + Number(t.taxa_pct) + '%)' }), el('span', { text: money(t.taxa) })]));
+    if (Number(t.taxa_entrega)) rows.push(el('div', { class: 'row' }, [el('span', { text: 'Taxa de entrega' }), el('span', { text: money(t.taxa_entrega) })]));
     if (Number(t.desconto)) rows.push(el('div', { class: 'row' }, [el('span', { text: 'Desconto' }), el('span', { text: '− ' + money(t.desconto) })]));
     rows.push(el('div', { class: 'row g' }, [el('span', { text: 'Total' }), el('span', { id: 'd-total', text: money(t.total) })]));
     if (Number(t.pago)) rows.push(el('div', { class: 'row' }, [el('span', { text: 'Pago' }), el('span', { text: money(t.pago) })]));
@@ -222,10 +244,10 @@ function caixaRuntime(app, CFG) {
     if (!closed) {
       var taxa = el('input', { id: 'f-taxa', inputmode: 'decimal', value: inp(t.taxa_pct) }), desc = el('input', { id: 'f-desc', inputmode: 'decimal', value: inp(t.desconto) });
       var adjBtn = el('button', { class: 'btn sec sm', id: 'f-adj', type: 'button', text: 'Aplicar', onclick: function () {
-        var a = num(taxa.value), b = num(desc.value); if (isNaN(a) || a < 0 || a > 30) { alert('Serviço entre 0 e 30%.'); return; } if (isNaN(b) || b < 0) { alert('Desconto inválido.'); return; }
+        var a = dlv ? 0 : num(taxa.value), b = num(desc.value); if (isNaN(a) || a < 0 || a > 30) { alert('Serviço entre 0 e 30%.'); return; } if (isNaN(b) || b < 0) { alert('Desconto inválido.'); return; }
         delete DR.dirty['f-taxa']; delete DR.dirty['f-desc']; api('caixa_ajustar', { p_token: token, p_comanda: c.id, p_taxa: a, p_desconto: b }).then(reload, fail);
       } });
-      dr.appendChild(el('div', { class: 'sec' }, [el('h3', { text: 'Ajustes' }), el('div', { class: 'adj' }, [el('label', { class: 'f' }, ['Serviço (%)', taxa]), el('label', { class: 'f' }, ['Desconto (R$)', desc])]), el('div', { style: 'margin-top:8px' }, [adjBtn])]));
+      dr.appendChild(el('div', { class: 'sec' }, [el('h3', { text: 'Ajustes' }), el('div', { class: 'adj' }, [dlv ? null : el('label', { class: 'f' }, ['Serviço (%)', taxa]), el('label', { class: 'f' }, ['Desconto (R$)', desc])]), el('div', { style: 'margin-top:8px' }, [adjBtn])]));
 
       var metodo = el('select', { id: 'f-met' }, METODOS.map(function (m) { return el('option', { value: m[0], text: m[1] }); }));
       var valor = el('input', { id: 'f-val', inputmode: 'decimal', value: inp(Math.max(0, t.saldo)) });
@@ -258,32 +280,37 @@ function caixaRuntime(app, CFG) {
     }))));
 
     var foot = el('div', { class: 'foot' }, [el('button', { class: 'btn sec', type: 'button', id: 'f-print', text: '🖨 Imprimir conta', onclick: function () { printBill(r); } })]);
-    if (!closed) foot.appendChild(el('button', { class: 'btn', id: 'f-close', type: 'button', text: 'Encerrar mesa', disabled: Number(t.saldo) > 0.009, onclick: function () { encerrar(c, false); } }));
+    if (!closed) foot.appendChild(el('button', { class: 'btn', id: 'f-close', type: 'button', text: dlv ? 'Concluir pedido' : 'Encerrar mesa', disabled: Number(t.saldo) > 0.009, onclick: function () { encerrar(c, false); } }));
     dr.appendChild(foot);
     // restaura o que estava sendo digitado
     for (var k in keep) { var n = d.getElementById(k); if (n && DR.dirty[k]) { n.value = keep[k].v; if (keep[k].f) n.focus(); } }
     [].forEach.call(dr.querySelectorAll('input,select'), function (i) { i.addEventListener('input', function () { DR.dirty[i.id] = 1; }); });
   }
   function encerrar(c, force) {
-    if (!force && !confirm('Encerrar a mesa ' + c.mesa + '? Os clientes serão desconectados.')) return;
+    if (!force && !confirm(c.canal && c.canal !== 'mesa' ? 'Concluir o pedido de ' + ((c.contato || {}).nome || 'delivery') + '?' : 'Encerrar a mesa ' + c.mesa + '? Os clientes serão desconectados.')) return;
     api('caixa_encerrar', { p_token: token, p_comanda: c.id, p_forcar: !!force }).then(function () { closeDrawer(); refresh(); }, function (e) {
       if (/pedidos_pendentes/.test(e.message)) { if (confirm('Ainda há pedidos na cozinha. Encerrar mesmo assim? Eles serão cancelados.')) encerrar(c, true); return; }
       fail(e);
     });
   }
   function printBill(r) {
-    var t = r.totais, h = '<h2 style="margin:0">' + esc(CFG.nome) + '</h2><p style="margin:4px 0 12px">Mesa ' + esc(r.comanda.mesa) + '</p><hr>';
+    var t = r.totais, cc = r.comanda, ct = cc.contato || {}, isD = cc.canal === 'delivery' || cc.canal === 'retirada';
+    var h = '<h2 style="margin:0">' + esc(CFG.nome) + '</h2><p style="margin:4px 0 12px">' + (isD ? (cc.canal === 'delivery' ? 'ENTREGA' : 'RETIRADA') + ' · ' + esc(ct.nome || '') : 'Mesa ' + esc(cc.mesa)) + '</p>';
+    if (isD) h += (ct.tel ? '<div>Tel: ' + esc(fone(ct.tel)) + '</div>' : '') + (ct.endereco ? '<div>End.: ' + esc(ct.endereco) + '</div>' : '') + (ct.pagamento ? '<div>Pgto: ' + esc(ct.pagamento) + (ct.troco ? ' (troco p/ ' + esc(ct.troco) + ')' : '') + '</div>' : '');
+    h += '<hr>';
     r.pedidos.filter(function (p) { return p.status !== 'cancelado'; }).forEach(function (p) {
       p.itens.forEach(function (i) { h += '<div style="display:flex;justify-content:space-between"><span>' + i.qtd + '× ' + esc(i.nome + (i.variante ? ' (' + i.variante + ')' : '')) + '</span><span>' + money(i.preco_unit * i.qtd) + '</span></div>'; });
     });
     h += '<hr><div style="display:flex;justify-content:space-between"><span>Consumo</span><span>' + money(t.subtotal) + '</span></div>';
     if (Number(t.taxa)) h += '<div style="display:flex;justify-content:space-between"><span>Serviço (' + Number(t.taxa_pct) + '%)</span><span>' + money(t.taxa) + '</span></div>';
+    if (Number(t.taxa_entrega)) h += '<div style="display:flex;justify-content:space-between"><span>Taxa de entrega</span><span>' + money(t.taxa_entrega) + '</span></div>';
     if (Number(t.desconto)) h += '<div style="display:flex;justify-content:space-between"><span>Desconto</span><span>− ' + money(t.desconto) + '</span></div>';
     h += '<div style="display:flex;justify-content:space-between;font-weight:bold;font-size:1.2em;margin-top:6px"><span>Total</span><span>' + money(t.total) + '</span></div>';
     var f = d.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0'; d.body.appendChild(f);
-    f.contentDocument.open(); f.contentDocument.write('<html><body style="font:14px monospace;max-width:300px">' + h + '</body></html>'); f.contentDocument.close();
+    f.contentDocument.open(); f.contentDocument.write('<html><head><style>@page{size:' + paper + 'mm auto;margin:2mm}</style></head><body style="font:' + (paper === 58 ? '12px' : '14px') + ' monospace;width:' + (paper === 58 ? '50mm' : '72mm') + '">' + h + '<p style="text-align:center;margin-top:10px">Obrigado pela preferência!</p></body></html>'); f.contentDocument.close();
     setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) {} setTimeout(function () { f.remove(); }, 1500); }, 100);
   }
+  function fone(t) { t = String(t || '').replace(/\D/g, ''); return t.length === 11 ? '(' + t.slice(0, 2) + ') ' + t.slice(2, 7) + '-' + t.slice(7) : t.length === 10 ? '(' + t.slice(0, 2) + ') ' + t.slice(2, 6) + '-' + t.slice(6) : t; }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
   /* ---------- polling ---------- */
@@ -302,12 +329,23 @@ function caixaRuntime(app, CFG) {
       setTitle(pend); if (pend && sound && Date.now() - (S.lastBeep || 0) > 30000) beep();
       var sig = JSON.stringify(r.mesas);
       if (sig !== S.sig || wasOff) { S.sig = sig; S.mesas = r.mesas; paint(); }
-      if (DR) return drawerLoad(false);
+      return refreshDl().then(function () { if (DR) return drawerLoad(false); });
     }, function (e) {
       pollFail = Math.min(pollFail + 1, 4);
       if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) { CFG.expired(); return; }
       S.online = false; if (dot) dot.className = 'dot off';
     });
+  }
+  // pedidos de delivery e retirada: avisa (som) quando chega um novo e quando algum fica pronto
+  function refreshDl() {
+    return api('caixa_delivery', { p_token: token, p_hash: S.hd }).then(function (r) {
+      var cached = false; if (r.sem_mudanca && S.lastDl) { r = S.lastDl; cached = true; } else { S.lastDl = r; S.hd = r.h; }
+      if (cached) return;
+      var seen = {}, fresh = false;
+      r.pedidos.forEach(function (c) { seen[c.id] = String(c.prontos); if (S.dlSeen && (S.dlSeen[c.id] === undefined || (Number(c.prontos) > Number(S.dlSeen[c.id])))) fresh = true; });
+      S.dlSeen = seen; if (fresh) beep();
+      S.dl = r.pedidos; paintDl();
+    }, function (e) { if (/sessao_invalida|restaurante_bloqueado/.test(e.message)) CFG.expired(); });
   }
   function loop() { clearTimeout(timer); if (stopped) return; timer = setTimeout(function () { if (stopped) return; refresh().then(loop, loop); }, pollMs()); }
   function start() { shell(); if (S.tab === 'resumo') loadResumo(); refresh().then(loop, loop); }

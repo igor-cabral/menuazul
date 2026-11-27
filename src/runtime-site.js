@@ -201,7 +201,8 @@ function siteRuntime() {
 
   function cart() {
     var MM = !!SYS; // modo mesa
-    if (!MM && !C.wa) { [].forEach.call(d.querySelectorAll('.add'), function (b) { b.remove(); }); return; }
+    var DLV = DATA.dlv || null; // delivery/retirada direto no sistema (KDS e caixa)
+    if (!MM && !C.wa && !DLV) { [].forEach.call(d.querySelectorAll('.add'), function (b) { b.remove(); }); return; }
 
     var KEY = 'gc-cart:' + (MM ? 'm:' + MESA : location.pathname), lines = [], info = {};
     try { var sv = JSON.parse(localStorage.getItem(KEY) || '{}'); lines = sv.lines || []; info = sv.info || {}; } catch (e) {}
@@ -285,7 +286,7 @@ function siteRuntime() {
     }
 
     /* ----- estado do modo mesa ----- */
-    var api = MM ? makeApi(SYS.url, SYS.key) : null;
+    var api = MM ? makeApi(SYS.url, SYS.key) : DLV ? makeApi(DLV.url, DLV.key) : null;
     var SKEY = 'gc-mesa:' + MESA;
     var S = { info: null, sess: null, est: null, fatal: '', offline: false, ended: false, asked: false, render: null, prev: null };
     var LBL = { novo: 'Enviado', preparando: 'Preparando', pronto: 'Pronto!', entregue: 'Entregue', cancelado: 'Cancelado' };
@@ -298,12 +299,16 @@ function siteRuntime() {
     var nEl = el('span', { class: 'n', text: '0' }), tEl = el('b', { class: 't', text: '' }), ordN = el('span', { class: 'n', text: '', hidden: true });
     var cartBtn = el('button', { type: 'button', class: 'cb-cart', onclick: function () { if (MM) cartSheetMesa(); else cartSheet(); } }, [el('span', {}, [nEl, ' Ver pedido']), tEl]);
     var ordBtn = MM ? el('button', { type: 'button', class: 'cb-ord', 'aria-label': 'Pedidos da mesa', onclick: ordersSheet }, ['🧾 Pedidos ', ordN]) : null;
-    var barEl = el('div', { class: 'cartbar', hidden: true }, [ordBtn, cartBtn]);
+    var TKEY = 'gc-dlv:' + (DLV ? DLV.slug : ''), trk = null;
+    try { trk = JSON.parse(localStorage.getItem(TKEY) || 'null'); } catch (e) {}
+    var trkBtn = DLV ? el('button', { type: 'button', class: 'cb-ord', id: 'track-btn', hidden: !trk, onclick: function () { if (trk) trackSheet(trk); } }, ['🧾 Meu pedido']) : null;
+    var barEl = el('div', { class: 'cartbar', hidden: true }, [ordBtn, trkBtn, cartBtn]);
     d.body.appendChild(barEl);
     function bar() {
       var n = count();
       cartBtn.hidden = !n; nEl.textContent = String(n); tEl.textContent = money(sub());
-      barEl.hidden = MM ? !S.sess : !n;
+      if (trkBtn) trkBtn.hidden = !trk;
+      barEl.hidden = MM ? !S.sess : (DLV ? (!n && !trk) : !n);
     }
     bar();
 
@@ -410,10 +415,12 @@ function siteRuntime() {
     /* ================= modo WhatsApp ================= */
     function cartSheet() {
       overlay(function (sh, close) {
-        if (!info.type || !C.types.some(function (t) { return t.k === info.type; })) info.type = C.types[0].k;
+        var TYPES = DLV ? C.types.filter(function (t) { return t.k !== 'dinein'; }) : C.types;
+        if (!TYPES.length) TYPES = [{ k: 'pickup', l: 'Retirada' }];
+        if (!info.type || !TYPES.some(function (t) { return t.k === info.type; })) info.type = TYPES[0].k;
         sh.appendChild(head('Seu pedido', close));
         var linesBox = el('div'), totals = el('div', { class: 'tot' }), notes = el('div'), err = el('div', { class: 'warn', hidden: true });
-        var send = el('button', { class: 'send', type: 'button' }, ['Enviar pedido pelo WhatsApp']);
+        var send = el('button', { class: 'send', id: 'send-order', type: 'button' }, [DLV ? 'Enviar pedido' : 'Enviar pedido pelo WhatsApp']);
         var sug = sugBox(function () { fillLines(linesBox, renderTotals); renderTotals(); });
         var st = status();
         if (st && !st.open) sh.appendChild(el('div', { class: 'warn', text: 'Estamos fechados agora. Você pode enviar o pedido e ele será respondido quando abrirmos.' }));
@@ -441,7 +448,7 @@ function siteRuntime() {
           chgF.hidden = !/dinheiro/i.test(info.pay || '');
           renderTotals();
         }
-        C.types.forEach(function (ty) {
+        TYPES.forEach(function (ty) {
           var r = el('input', { type: 'radio', name: 'ty' }); r.checked = info.type === ty.k;
           var lb = el('label', { class: info.type === ty.k ? 'on' : '' }, [r, ty.l]);
           r.addEventListener('change', function () { info.type = ty.k; save(); [].forEach.call(tbox.children, function (x) { x.classList.remove('on'); }); lb.classList.add('on'); sync(); });
@@ -452,7 +459,9 @@ function siteRuntime() {
 
         sh.appendChild(linesBox); sh.appendChild(sug);
         sh.appendChild(el('button', { class: 'link', type: 'button', text: 'Adicionar mais itens', onclick: close }));
+        var telI = bind(el('input', { type: 'tel', id: 'cf-tel', autocomplete: 'tel', inputmode: 'tel', placeholder: '(47) 99999-9999' }), 'tel');
         sh.appendChild(field('Seu nome', nameI));
+        if (DLV) sh.appendChild(field('Telefone (WhatsApp)', telI));
         sh.appendChild(el('div', { class: 'fld' }, ['Como você quer receber?', tbox]));
         sh.appendChild(addrF);
         if (C.pays.length) { sh.appendChild(field('Forma de pagamento', payI)); sh.appendChild(chgF); }
@@ -465,10 +474,29 @@ function siteRuntime() {
         send.addEventListener('click', function () {
           var miss = [];
           if (!(info.name || '').trim()) miss.push('seu nome');
+          if (DLV && String(info.tel || '').replace(/\D/g, '').length < 10) miss.push('o telefone com DDD');
           if (info.type === 'delivery' && !(info.addr || '').trim()) miss.push('o endereço de entrega');
           if (C.pays.length && !info.pay) miss.push('a forma de pagamento');
           if (miss.length) { err.hidden = false; err.textContent = 'Preencha ' + miss.join(', ') + '.'; return; }
           err.hidden = true;
+          if (DLV) {
+            send.disabled = true; send.textContent = 'Enviando…';
+            api('publico_pedir_delivery', {
+              p_slug: DLV.slug, p_canal: info.type === 'delivery' ? 'delivery' : 'retirada', p_nome: info.name, p_tel: info.tel,
+              p_endereco: info.type === 'delivery' ? (info.addr || '') : '', p_pagto: info.pay || '', p_troco: /dinheiro/i.test(info.pay || '') ? (info.change || '') : '',
+              p_obs: info.notes || '',
+              p_itens: lines.map(function (l) { return { id: l.id, v: l.v || '', a: l.a || [], q: l.q, o: l.o || '', src: l.src || undefined }; })
+            }).then(function (r) {
+              var rec = { token: r.cliente_token, numero: r.numero, canal: r.canal };
+              try { localStorage.setItem(TKEY, JSON.stringify(rec)); } catch (e) {}
+              trk = rec;
+              lines.length = 0; info.notes = ''; save(); bar(); close(); trackSheet(rec);
+            }, function (e) {
+              send.disabled = false; send.textContent = 'Enviar pedido';
+              err.hidden = false; err.textContent = e.status ? e.message : 'Sem conexão. Seu pedido não foi enviado, tente de novo.';
+            });
+            return;
+          }
           var url = 'https://wa.me/' + C.wa + '?text=' + encodeURIComponent(message());
           var w = window.open(url, '_blank');
           if (!w) location.href = url;
@@ -497,6 +525,48 @@ function siteRuntime() {
       if (info.notes) out.push('*Observações:* ' + info.notes);
       return out.join('\n');
     }
+
+    /* ================= acompanhamento do pedido de delivery/retirada ================= */
+    function trackSheet(rec) {
+      var LBLD = { novo: 'Recebido', preparando: 'Em preparo', pronto: rec.canal === 'delivery' ? 'Pronto, saindo para entrega' : 'Pronto para retirar!', entregue: rec.canal === 'delivery' ? 'Saiu para entrega' : 'Retirado', cancelado: 'Cancelado' };
+      var tm = null, gone = false;
+      overlay(function (sh, close) {
+        var box = el('div');
+        sh.appendChild(head('Pedido #' + rec.numero, close)); sh.appendChild(box);
+        function done() { trk = null; try { localStorage.removeItem(TKEY); } catch (e) {} bar(); }
+        function draw(est) {
+          box.textContent = '';
+          if (est.comanda.status !== 'aberta') {
+            box.appendChild(el('div', { class: 'warn ok', text: '✓ Pedido concluído. Obrigado pela preferência! 💛' }));
+            done(); gone = true; return;
+          }
+          box.appendChild(el('p', { class: 'muted', text: rec.canal === 'delivery' ? 'Entrega' : 'Retirada no local' }));
+          est.pedidos.forEach(function (p) {
+            box.appendChild(el('div', { class: 'ord' + (p.status === 'cancelado' ? ' cx' : '') }, [
+              el('div', { class: 'ord-top' }, [el('b', { text: '#' + p.numero + (p.setor ? ' · ' + p.setor : '') }), el('span', { class: 'pill ' + p.status, text: LBLD[p.status] || p.status })]),
+              el('div', { class: 'ord-items' }, p.itens.map(function (i) { return el('div', { class: 'oi' }, [el('span', { text: itemText(i) }), el('span', { text: money(i.preco_unit * i.qtd) })]); }))]));
+          });
+          var t = est.totais, rows = [el('div', {}, [el('span', { text: 'Subtotal' }), el('span', { text: money(Number(t.subtotal)) })])];
+          if (Number(t.taxa_entrega)) rows.push(el('div', {}, [el('span', { text: 'Taxa de entrega' }), el('span', { text: money(Number(t.taxa_entrega)) })]));
+          rows.push(el('div', { class: 'g' }, [el('span', { text: 'Total' }), el('span', { text: money(Number(t.total)) })]));
+          box.appendChild(el('div', { class: 'tot' }, rows));
+          if (est.pedidos.every(function (p) { return p.status === 'cancelado'; })) box.appendChild(el('div', { class: 'warn', text: 'O restaurante cancelou este pedido. Fale com ele para saber o motivo.' }));
+          if (C.wa) box.appendChild(el('a', { class: 'send alt', id: 'track-wa', href: 'https://wa.me/' + C.wa + '?text=' + encodeURIComponent('Olá! Sobre o meu pedido #' + rec.numero + ' feito pelo cardápio.'), target: '_blank', rel: 'noopener', text: 'Falar com o restaurante no WhatsApp' }));
+        }
+        function load() {
+          if (gone) return;
+          api('publico_estado', { p_cliente_token: rec.token }).then(draw, function (e) {
+            if (/sessao_invalida/.test(e.message)) { box.textContent = ''; box.appendChild(el('p', { class: 'none', text: 'Não encontramos mais este pedido.' })); done(); gone = true; }
+          }).then(function () { if (!gone) tm = setTimeout(load, 6000); });
+        }
+        box.appendChild(el('p', { class: 'none', text: 'Carregando…' })); load();
+      }, function () { gone = true; clearTimeout(tm); });
+    }
+    function itemText(i) {
+      return i.qtd + 'x ' + i.nome + (i.variante ? ' (' + i.variante + ')' : '') + (i.adicionais && i.adicionais.length ? ' + ' + i.adicionais.map(function (a) { return a.l; }).join(', ') : '');
+    }
+    if (DLV && trk) trackSheetSoon();
+    function trackSheetSoon() { /* não abre sozinho: o cliente toca em "Meu pedido" */ }
 
     if (!MM) return;
 
