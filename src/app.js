@@ -595,10 +595,10 @@
     for (const f of resolve.files()) {            // fotos: nome = hash do conteúdo (cache eterno, sem foto velha)
       const bytes = b64ToBytes(f.b64), ext = f.path.split('.').pop(), key = slug + '/' + await sha12(bytes) + '.' + ext;
       if (HOST && ext === 'svg') { urlOf[f.path] = 'data:image/svg+xml;base64,' + f.b64; continue; } // SVG pequeno fica embutido (o envio do painel só aceita fotos raster)
-      const pub = base + '/storage/v1/object/public/cardapios/' + key;
+      const bk = (ext === 'glb' || ext === 'usdz') ? 'modelos' : 'cardapios', pub = base + '/storage/v1/object/public/' + bk + '/' + key;
       const have = await fetch(pub, { method: 'HEAD' }).then(x => x.ok, () => false);
       if (!have) {
-        const up = await fetch(base + '/storage/v1/object/cardapios/' + key, { method: 'POST', headers: Object.assign(HOST ? Object.assign({ apikey: c.key }, /^eyJ/.test(c.key) ? { Authorization: 'Bearer ' + c.key } : {}) : { apikey: c.key, Authorization: 'Bearer ' + PLAT.jwt, 'x-upsert': 'true' }, { 'Content-Type': IMG_MIME[ext] || 'application/octet-stream' }), body: bytes });
+        const up = await fetch(base + '/storage/v1/object/' + bk + '/' + key, { method: 'POST', headers: Object.assign(HOST ? Object.assign({ apikey: c.key }, /^eyJ/.test(c.key) ? { Authorization: 'Bearer ' + c.key } : {}) : { apikey: c.key, Authorization: 'Bearer ' + PLAT.jwt, 'x-upsert': 'true' }, { 'Content-Type': IMG_MIME[ext] || 'application/octet-stream' }), body: bytes });
         if (!up.ok && !(HOST && /Duplicate|already exists/i.test(await up.text().catch(() => '')))) throw new Error('Falha ao enviar a foto ' + f.path + ' (' + up.status + ')');
       }
       urlOf[f.path] = pub;
@@ -714,17 +714,89 @@
   }
 
   /* ---------- modelo 3D (escaneado com app: Polycam, Scaniverse, Kiri...) ---------- */
-  const MODEL_MAX = 20 * 1024 * 1024;
+  const MODEL_MAX = 20 * 1024 * 1024, MODEL_IN_MAX = 150 * 1024 * 1024, MODEL_GOAL = 5 * 1024 * 1024;
   const fmtMB = n => (n / 1048576).toFixed(1).replace('.', ',') + ' MB';
   const dataUrlBytes = u => Math.floor(((u.split(',')[1] || '').length * 3) / 4);
+
+  /* optimizeGlb:start */
+  // Reduz o peso de um .glb sem bibliotecas: redimensiona e recomprime as texturas embutidas (PNG/JPEG),
+  // que são quase todo o peso de um escaneamento. A geometria não é alterada. Devolve null se não houver o que otimizar.
+  async function optimizeGlb(buf, maxTex, quality) {
+    const dv = new DataView(buf);
+    if (buf.byteLength < 20 || dv.getUint32(0, true) !== 0x46546C67 || dv.getUint32(4, true) !== 2) return null;
+    const total = Math.min(dv.getUint32(8, true), buf.byteLength);
+    let off = 12, json = null, bin = null;
+    while (off + 8 <= total) {
+      const len = dv.getUint32(off, true), type = dv.getUint32(off + 4, true), st = off + 8;
+      if (type === 0x4E4F534A && !json) json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, st, len)));
+      else if (type === 0x004E4942 && !bin) bin = new Uint8Array(buf, st, len);
+      off = st + len;
+    }
+    if (!json || !bin || !json.images || !json.images.length || !json.bufferViews || (json.buffers || []).length !== 1) return null;
+    if (json.bufferViews.some(v => (v.buffer || 0) !== 0)) return null;
+    const view = i => { const v = json.bufferViews[i]; return bin.subarray(v.byteOffset || 0, (v.byteOffset || 0) + v.byteLength); };
+    const repl = new Map();
+    for (const im of json.images) {
+      if (im.bufferView == null || !/^image\/(png|jpeg)$/.test(im.mimeType || '') || repl.has(im.bufferView)) continue;
+      try {
+        const src = view(im.bufferView);
+        let bmp;
+        try { bmp = await createImageBitmap(new Blob([src], { type: im.mimeType }), { colorSpaceConversion: 'none', premultiplyAlpha: 'none', imageOrientation: 'none' }); }
+        catch (e) { bmp = await createImageBitmap(new Blob([src], { type: im.mimeType })); }
+        const sc = Math.min(1, maxTex / Math.max(bmp.width, bmp.height));
+        const w = Math.max(1, Math.round(bmp.width * sc)), hh = Math.max(1, Math.round(bmp.height * sc));
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = hh;
+        const ctx = cv.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(bmp, 0, 0, w, hh);
+        let alpha = false;
+        if (im.mimeType === 'image/png') { const px = ctx.getImageData(0, 0, w, hh).data; for (let k = 3; k < px.length; k += 4) if (px[k] < 255) { alpha = true; break; } }
+        const type = alpha ? 'image/png' : 'image/jpeg';
+        const blob = await new Promise(r => cv.toBlob(r, type, quality));
+        if (blob && blob.size < src.length) repl.set(im.bufferView, { data: new Uint8Array(await blob.arrayBuffer()), mime: type });
+      } catch (e) { /* imagem que o navegador não abre: fica como está */ }
+    }
+    if (!repl.size) return null;
+    for (const im of json.images) { const r = im.bufferView != null && repl.get(im.bufferView); if (r) im.mimeType = r.mime; }
+    let pos = 0; const parts = [];
+    json.bufferViews = json.bufferViews.map((v, i) => {
+      const data = repl.has(i) ? repl.get(i).data : view(i);
+      pos = (pos + 3) & ~3;
+      const nv = Object.assign({}, v, { byteOffset: pos, byteLength: data.length });
+      parts.push([pos, data]); pos += data.length;
+      return nv;
+    });
+    const binLen = (pos + 3) & ~3;
+    json.buffers[0] = Object.assign({}, json.buffers[0], { byteLength: binLen }); delete json.buffers[0].uri;
+    const jb = new TextEncoder().encode(JSON.stringify(json)), jLen = (jb.length + 3) & ~3;
+    const out = new Uint8Array(12 + 8 + jLen + 8 + binLen), o = new DataView(out.buffer);
+    o.setUint32(0, 0x46546C67, true); o.setUint32(4, 2, true); o.setUint32(8, out.length, true);
+    o.setUint32(12, jLen, true); o.setUint32(16, 0x4E4F534A, true); out.fill(0x20, 20 + jb.length, 20 + jLen); out.set(jb, 20);
+    const bs = 20 + jLen; o.setUint32(bs, binLen, true); o.setUint32(bs + 4, 0x004E4942, true);
+    parts.forEach(([p, d]) => out.set(d, bs + 8 + p));
+    return out.buffer;
+  }
+  /* optimizeGlb:end */
+
   async function fileToModelDataURL(file, kind) {
-    if (file.size > MODEL_MAX) throw new Error('Arquivo muito grande (' + fmtMB(file.size) + '). O limite é 20 MB — reduza a qualidade/texturas no app de escaneamento.');
-    const buf = await file.arrayBuffer(), head = new Uint8Array(buf, 0, 4);
+    if (file.size > (kind === 'model' ? MODEL_IN_MAX : MODEL_MAX)) throw new Error('Arquivo muito grande (' + fmtMB(file.size) + '). Exporte com menos qualidade no app de escaneamento.');
+    let buf = await file.arrayBuffer();
+    const head = new Uint8Array(buf, 0, 4), before = buf.byteLength;
     if (kind === 'model') {
       if (!/\.glb$/i.test(file.name) || String.fromCharCode(...head) !== 'glTF') throw new Error('Use um arquivo .glb (exporte como "GLB" no app).');
+      if (buf.byteLength > MODEL_GOAL) {
+        const orig = buf;
+        for (const [px, q] of [[2048, 0.85], [1536, 0.82], [1024, 0.8]]) { // tenta a melhor qualidade que cabe na meta (sempre a partir do original)
+          const o = await optimizeGlb(orig, px, q).catch(() => null);
+          if (!o) break;
+          if (o.byteLength < buf.byteLength) buf = o;
+          if (buf.byteLength <= MODEL_GOAL) break;
+        }
+      }
+      if (buf.byteLength > MODEL_MAX) throw new Error('Mesmo otimizado o modelo tem ' + fmtMB(buf.byteLength) + ' (limite 20 MB). No app, exporte com menos polígonos.');
     } else if (!/\.usdz$/i.test(file.name) || head[0] !== 0x50 || head[1] !== 0x4b) throw new Error('Use um arquivo .usdz.');
     const type = kind === 'model' ? 'model/gltf-binary' : 'model/vnd.usdz+zip';
-    return await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok('data:' + type + ';base64,' + String(f.result).split(',')[1]); f.onerror = () => no(new Error('Não consegui ler o arquivo')); f.readAsDataURL(new Blob([buf], { type })); });
+    const url = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok('data:' + type + ';base64,' + String(f.result).split(',')[1]); f.onerror = () => no(new Error('Não consegui ler o arquivo')); f.readAsDataURL(new Blob([buf], { type })); });
+    return { url, before, after: buf.byteLength };
   }
   function model3dField(it) {
     const box = h('div', { class: 'f' });
@@ -743,13 +815,17 @@
       input.addEventListener('change', async () => {
         const file = input.files[0]; input.value = '';
         if (!file) return;
-        try { it[kind] = await fileToModelDataURL(file, kind); changed(); draw(); toast('Modelo 3D carregado (' + fmtMB(file.size) + ')'); } catch (e) { toast(e.message); }
+        try {
+          toast('Processando o modelo 3D…');
+          const r = await fileToModelDataURL(file, kind); it[kind] = r.url; changed(); draw();
+          toast(r.after < r.before ? 'Modelo otimizado: ' + fmtMB(r.before) + ' → ' + fmtMB(r.after) : 'Modelo 3D carregado (' + fmtMB(r.after) + ')' + (r.after > 8 * 1048576 ? ' — pesado: pode demorar no 4G' : ''));
+        } catch (e) { toast(e.message); }
       });
       draw();
       return h('div', {}, line, hint ? h('small', { class: 'muted' }, hint) : null);
     };
     box.append(h('span', { class: 'f-l' }, 'Modelo 3D / AR'),
-      row('model', 'modelo 3D (.glb)', '.glb,model/gltf-binary', 'Escaneie o prato com um app (Polycam, Scaniverse, Kiri Engine) e exporte como GLB, até 20 MB. O cardápio mostra o selo 3D e o botão "Ver na sua mesa".'),
+      row('model', 'modelo 3D (.glb)', '.glb,model/gltf-binary', 'Escaneie o prato com um app (Polycam, Scaniverse, Kiri Engine) e exporte como GLB (modelos grandes são otimizados automaticamente; limite final de 20 MB). O cardápio mostra o selo 3D e o botão "Ver na sua mesa".'),
       it.model ? row('modelIos', 'versão iPhone (.usdz, opcional)', '.usdz', 'Opcional. Sem ela, o iPhone gera a versão de AR automaticamente a partir do GLB.') : null);
     return box;
   }

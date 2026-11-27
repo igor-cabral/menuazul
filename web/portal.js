@@ -120,7 +120,7 @@
     if (codigo) { model.options = Object.assign({}, model.options, { cartEnabled: true }); }
     const resto = 2000 - (Date.now() - t0); if (resto > 0) await new Promise(ok => setTimeout(ok, resto));
     const populares = await popP;
-    const html = MenuGen.buildSite(model, codigo ? { populares, mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : { populares });
+    const html = MenuGen.buildSite(model, codigo ? { populares, rastreio: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug }, mesa: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug, codigo } } : { populares, rastreio: { url: CFG.supabaseUrl, key: CFG.supabaseKey, slug: r.slug } });
     document.open(); document.write(html); document.close();
   }
 
@@ -379,7 +379,8 @@
           h('div', {}, h('h3', {}, 'Mais vendidos'), r.mais_vendidos.length ? barras(r.mais_vendidos.map(x => ({ l: x.nome, v: x.qtd })), v => v + ' un.') : h('p', { class: 'mut' }, 'Sem vendas no período.')),
           h('div', {}, h('h3', {}, 'Menos vendidos'), r.menos_vendidos.length ? r.menos_vendidos.map(x => h('div', { class: 'bar' }, h('span', { class: 'bl' }, x.nome), h('span', { class: 'bv' }, x.qtd === 0 ? 'nenhuma venda' : x.qtd + ' un.'))) : h('p', { class: 'mut' }, 'Cardápio ainda não publicado.'))),
         h('h3', {}, 'Faturamento por forma de pagamento'), met.length ? met.map(k => h('div', { class: 'bar' }, h('span', { class: 'bl' }, METODO[k] || k), h('span', { class: 'bt' }, h('i', { style: 'width:' + ((a.por_metodo[k] || 0) / Math.max(1, a.faturamento) * 100) + '%' })), h('span', { class: 'bv' }, brl(a.por_metodo[k] || 0)), delta(a.por_metodo[k] || 0, b.por_metodo[k]))) : h('p', { class: 'mut' }, 'Sem pagamentos no período.'),
-        h('h3', {}, 'Itens que mais esgotam'), r.esgotados.length ? barras(r.esgotados.map(x => ({ l: x.nome, v: x.vezes })), v => v + (v === 1 ? ' vez' : ' vezes')) : h('p', { class: 'mut' }, 'Nenhum item marcado como esgotado no período (o registro começa a valer a partir desta versão).')].flat(Infinity).filter(Boolean));
+        h('h3', {}, 'Itens que mais esgotam'), r.esgotados.length ? barras(r.esgotados.map(x => ({ l: x.nome, v: x.vezes })), v => v + (v === 1 ? ' vez' : ' vezes')) : h('p', { class: 'mut' }, 'Nenhum item marcado como esgotado no período (o registro começa a valer a partir desta versão).'),
+        h('h3', {}, 'Pratos mais vistos em 3D'), (r.uso_3d || []).length ? r.uso_3d.map(x => h('div', { class: 'bar' }, h('span', { class: 'bl' }, x.nome), h('span', { class: 'bv' }, x.aberturas + (x.aberturas === 1 ? ' abertura' : ' aberturas') + ' · ' + x.ar + ' AR'))) : h('p', { class: 'mut' }, 'Nenhuma abertura de prato em 3D no período. "AR" conta os toques em "Ver na sua mesa".')].flat(Infinity).filter(Boolean));
     }
     async function carregar(k) {
       btns.forEach(x => x.classList.toggle('on', x.dataset.p === k));

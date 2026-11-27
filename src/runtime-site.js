@@ -90,7 +90,20 @@ function siteRuntime() {
   paint(); setInterval(paint, 60000);
 
   /* ---------- visualizador 3D / AR (model-viewer, carregado só no primeiro toque) ---------- */
-  var M3D = DATA.m3d || {}, mvPromise = null;
+  var M3D = DATA.m3d || {}, mvPromise = null, T3 = DATA.t3 || null, apiT = null;
+  function track(id, tipo) { // conta a abertura do 3D / o toque em "Ver na sua mesa" (anônimo, só no site publicado)
+    if (!T3 || typeof makeApi !== 'function') return;
+    try { apiT = apiT || makeApi(T3.url, T3.key); apiT('publico_3d_evento', { p_slug: T3.slug, p_item: id, p_tipo: tipo }).catch(function () {}); } catch (e) {}
+  }
+  function orderBtn(id) { // botão de pedido que o cardápio já tem para este prato (carrinho ou WhatsApp)
+    var th = d.querySelectorAll('[data-3d]');
+    for (var i = 0; i < th.length; i++) {
+      if (th[i].getAttribute('data-3d') !== id) continue;
+      var art = th[i].closest('.item');
+      return art ? (art.querySelector('.add') || art.querySelector('a.order')) : null;
+    }
+    return null;
+  }
   function loadMV() {
     if (window.customElements && customElements.get('model-viewer')) return Promise.resolve();
     if (mvPromise) return mvPromise;
@@ -110,6 +123,7 @@ function siteRuntime() {
   }
   function open3d(id) {
     var m = M3D[id]; if (!m || !m.m) return;
+    track(id, 'abrir');
     var ov = el('div', { class: 'ov' }), sh = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' });
     function close() { ov.remove(); if (!d.querySelector('.ov')) d.body.classList.remove('noscroll'); d.removeEventListener('keydown', onKey); }
     function onKey(e) { if (e.key === 'Escape') close(); }
@@ -129,17 +143,57 @@ function siteRuntime() {
       mv.setAttribute('camera-controls', ''); mv.setAttribute('auto-rotate', ''); mv.setAttribute('touch-action', 'pan-y');
       mv.setAttribute('shadow-intensity', '1'); mv.setAttribute('exposure', '1.05');
       mv.setAttribute('ar', ''); mv.setAttribute('ar-modes', 'webxr scene-viewer quick-look'); mv.setAttribute('ar-scale', 'fixed'); mv.setAttribute('ar-placement', 'floor');
-      var ar = el('button', { class: 'v3d-ar', type: 'button', text: 'Ver na sua mesa', hidden: true, onclick: function () { try { mv.activateAR(); } catch (e) {} } });
+      var ar = el('button', { class: 'v3d-ar', type: 'button', text: 'Ver na sua mesa', hidden: true, onclick: function () { track(id, 'ar'); try { mv.activateAR(); } catch (e) {} } });
       var hint = el('p', { class: 'v3d-hint', text: 'Arraste para girar · pince para aproximar' });
       mv.addEventListener('load', function () { if (mv.canActivateAR) { ar.hidden = false; hint.textContent = 'Arraste para girar · toque em “Ver na sua mesa” e aponte para a mesa'; } });
       mv.addEventListener('error', function () { stage.textContent = 'Não foi possível carregar o modelo 3D.'; if (mv.parentNode) mv.remove(); });
-      stage.replaceWith(mv); sh.appendChild(ar); sh.appendChild(hint);
+      var ob = orderBtn(id), add = ob ? el('button', { class: 'v3d-add', type: 'button', text: ob.classList.contains('add') ? 'Adicionar ao pedido' : 'Pedir pelo WhatsApp', onclick: function () { close(); ob.click(); } }) : null;
+      stage.replaceWith(mv); if (add) sh.appendChild(add); sh.appendChild(ar); sh.appendChild(hint);
     }, function () { stage.textContent = 'Não foi possível carregar o visualizador 3D. Verifique sua conexão.'; });
   }
   d.addEventListener('click', function (e) {
     var b = e.target.closest ? e.target.closest('[data-3d]') : null;
     if (b) { e.preventDefault(); open3d(b.getAttribute('data-3d')); }
   });
+
+  /* ---------- prévia 3D girando no lugar da foto (só cards visíveis, no máximo 3 por vez) ---------- */
+  (function live3d() {
+    var cards = d.querySelectorAll('.thumb3d');
+    if (!cards.length || !('IntersectionObserver' in window)) return;
+    var net = navigator.connection || {};
+    if (net.saveData || /^(slow-2g|2g|3g)$/.test(net.effectiveType || '')) return; // internet lenta ou economia de dados: fica a foto
+    if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var MAX = 3, want = [], on = [], ready = false;
+    function off(b) {
+      var i = on.indexOf(b); if (i < 0) return;
+      on.splice(i, 1); b.classList.remove('live');
+      var mv = b.querySelector('model-viewer'); if (mv) mv.remove(); // libera o contexto WebGL
+    }
+    function start(b) {
+      var m = M3D[b.getAttribute('data-3d')]; if (!m || !m.m) return;
+      on.push(b);
+      var mv = d.createElement('model-viewer');
+      mv.setAttribute('src', m.m); mv.setAttribute('auto-rotate', ''); mv.setAttribute('rotation-per-second', '35deg');
+      mv.setAttribute('disable-zoom', ''); mv.setAttribute('disable-pan', ''); mv.setAttribute('interaction-prompt', 'none');
+      mv.setAttribute('camera-orbit', '0deg 68deg auto'); mv.setAttribute('shadow-intensity', '0.5'); mv.setAttribute('exposure', '1.05');
+      mv.setAttribute('aria-hidden', 'true'); mv.setAttribute('tabindex', '-1');
+      mv.addEventListener('load', function () { if (mv.parentNode) b.classList.add('live'); });
+      mv.addEventListener('error', function () { off(b); });
+      b.appendChild(mv);
+    }
+    function pump() { if (!ready) return; for (var i = 0; i < want.length && on.length < MAX; i++) if (on.indexOf(want[i]) < 0) start(want[i]); }
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        var b = e.target, i = want.indexOf(b);
+        if (e.isIntersecting) { if (i < 0) want.push(b); } else { if (i >= 0) want.splice(i, 1); off(b); }
+      });
+      want.sort(function (a, b) { return a.getBoundingClientRect().top - b.getBoundingClientRect().top; });
+      pump();
+    }, { threshold: 0.5 });
+    [].forEach.call(cards, function (c) { io.observe(c); });
+    function go() { loadMV().then(function () { ready = true; pump(); }, function () {}); }
+    if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 1200); // depois que o cardápio já apareceu
+  })();
 
   /* ---------- carrinho ---------- */
   var C = DATA.cart, SYS = DATA.sys || null, MESA = SYS ? SYS.slug + ':' + SYS.codigo : '';

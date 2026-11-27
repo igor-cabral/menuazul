@@ -81,7 +81,7 @@ export async function startFakeBackend() {
     req.on('data', c => chunks.push(c));
     req.on('end', async () => {
       const raw = Buffer.concat(chunks);
-      const m = /^\/rest\/v1\/rpc\/([a-z_]+)$/.exec(url);
+      const m = /^\/rest\/v1\/rpc\/([a-z0-9_]+)$/.exec(url);
       if (req.method === 'POST' && m) {
         let body = {}; try { body = raw.length ? JSON.parse(raw) : {}; } catch (e) { /* vazio */ }
         const r = await be.rpc(m[1], body, subOf(req));
@@ -98,7 +98,9 @@ export async function startFakeBackend() {
         const sub = subOf(req), k = decodeURIComponent(up[1]);
         const dono = sub && (await be.query('select 1 from plataforma_admins where user_id = $1', [sub])).rows.length;
         // política "cardapios_envio_painel": qualquer um envia foto nova com caminho válido (sem sobrescrever)
-        const painel = (await be.query('select _foto_ok($1) as ok', [k.replace(/^cardapios\//, '')])).rows[0].ok && req.headers['x-upsert'] !== 'true';
+        // política "modelos_envio_painel": o mesmo para modelos 3D, no bucket "modelos"
+        const bucket = k.startsWith('modelos/') ? 'modelos' : 'cardapios', nome = k.slice(bucket.length + 1);
+        const painel = (await be.query(bucket === 'modelos' ? 'select _modelo_ok($1) as ok' : 'select _foto_ok($1) as ok', [nome])).rows[0].ok && req.headers['x-upsert'] !== 'true';
         if (!dono && !painel) return send(403, { message: 'new row violates row-level security policy' });
         if (files.has(k) && req.headers['x-upsert'] !== 'true') return send(409, { message: 'The resource already exists' });
         files.set(k, { buf: raw, type: req.headers['content-type'] || 'application/octet-stream' });
