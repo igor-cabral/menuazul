@@ -109,6 +109,8 @@ console.log('5b) editor no painel: admin lê e publica só o próprio cardápio'
   await good('admin_publicar', { p_token: tokA, p_modelo: { name: 'Pizza Boa', theme: { primary: '#d00' } }, p_itens: itA }); // volta ao estado do teste
   const foto = async n => (await be.query('select _foto_ok($1) as ok', [n])).rows[0].ok;
   ok(await foto('pizza-boa/0123456789ab.webp'), 'caminho de foto válido');
+  ok(await foto('pizza-boa/0123456789ab.glb') && await foto('pizza-boa/0123456789ab.usdz'), 'caminho de modelo 3D (glb/usdz) válido');
+  ok(!(await foto('pizza-boa/0123456789ab.obj')) && !(await foto('inexistente/0123456789ab.glb')), 'modelo 3D: extensão e slug inválidos recusados');
   ok(!(await foto('inexistente/0123456789ab.webp')) && !(await foto('pizza-boa/foto.webp')) && !(await foto('pizza-boa/0123456789ab.svg')) && !(await foto('pizza-boa/a/0123456789ab.png')), 'caminhos inválidos recusados (slug, nome, svg, subpasta)');
 }
 

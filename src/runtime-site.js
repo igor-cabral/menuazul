@@ -89,6 +89,58 @@ function siteRuntime() {
   }
   paint(); setInterval(paint, 60000);
 
+  /* ---------- visualizador 3D / AR (model-viewer, carregado só no primeiro toque) ---------- */
+  var M3D = DATA.m3d || {}, mvPromise = null;
+  function loadMV() {
+    if (window.customElements && customElements.get('model-viewer')) return Promise.resolve();
+    if (mvPromise) return mvPromise;
+    var srcs = (DATA.sys ? [location.origin + '/vendor/model-viewer.min.js'] : []).concat(['https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js']);
+    function tryAt(i) {
+      return new Promise(function (ok, no) {
+        if (i >= srcs.length) return no(new Error('model-viewer'));
+        var sc = d.createElement('script'); sc.type = 'module'; sc.src = srcs[i];
+        sc.onload = function () { ok(); };
+        sc.onerror = function () { sc.remove(); tryAt(i + 1).then(ok, no); };
+        d.head.appendChild(sc);
+      });
+    }
+    mvPromise = tryAt(0).then(function () { return customElements.whenDefined('model-viewer'); });
+    mvPromise.catch(function () { mvPromise = null; });
+    return mvPromise;
+  }
+  function open3d(id) {
+    var m = M3D[id]; if (!m || !m.m) return;
+    var ov = el('div', { class: 'ov' }), sh = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' });
+    function close() { ov.remove(); if (!d.querySelector('.ov')) d.body.classList.remove('noscroll'); d.removeEventListener('keydown', onKey); }
+    function onKey(e) { if (e.key === 'Escape') close(); }
+    ov.addEventListener('click', function (e) { if (e.target === ov) close(); });
+    d.addEventListener('keydown', onKey);
+    var stage = el('div', { class: 'v3d-msg', text: 'Carregando o modelo 3D…' });
+    sh.appendChild(el('div', { class: 'sh-head' }, [el('h2', { text: m.n }), el('button', { class: 'x', type: 'button', 'aria-label': 'Fechar', text: '✕', onclick: close })]));
+    sh.appendChild(stage);
+    ov.appendChild(sh); d.body.appendChild(ov); d.body.classList.add('noscroll');
+    loadMV().then(function () {
+      var mv = d.createElement('model-viewer');
+      mv.className = 'v3d';
+      mv.setAttribute('src', m.m);
+      if (m.i) mv.setAttribute('ios-src', m.i);
+      if (m.p) mv.setAttribute('poster', m.p);
+      mv.setAttribute('alt', 'Modelo 3D de ' + m.n);
+      mv.setAttribute('camera-controls', ''); mv.setAttribute('auto-rotate', ''); mv.setAttribute('touch-action', 'pan-y');
+      mv.setAttribute('shadow-intensity', '1'); mv.setAttribute('exposure', '1.05');
+      mv.setAttribute('ar', ''); mv.setAttribute('ar-modes', 'webxr scene-viewer quick-look'); mv.setAttribute('ar-scale', 'fixed'); mv.setAttribute('ar-placement', 'floor');
+      var ar = el('button', { class: 'v3d-ar', type: 'button', text: 'Ver na sua mesa', hidden: true, onclick: function () { try { mv.activateAR(); } catch (e) {} } });
+      var hint = el('p', { class: 'v3d-hint', text: 'Arraste para girar · pince para aproximar' });
+      mv.addEventListener('load', function () { if (mv.canActivateAR) { ar.hidden = false; hint.textContent = 'Arraste para girar · toque em “Ver na sua mesa” e aponte para a mesa'; } });
+      mv.addEventListener('error', function () { stage.textContent = 'Não foi possível carregar o modelo 3D.'; if (mv.parentNode) mv.remove(); });
+      stage.replaceWith(mv); sh.appendChild(ar); sh.appendChild(hint);
+    }, function () { stage.textContent = 'Não foi possível carregar o visualizador 3D. Verifique sua conexão.'; });
+  }
+  d.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-3d]') : null;
+    if (b) { e.preventDefault(); open3d(b.getAttribute('data-3d')); }
+  });
+
   /* ---------- carrinho ---------- */
   var C = DATA.cart, SYS = DATA.sys || null, MESA = SYS ? SYS.slug + ':' + SYS.codigo : '';
   if (C) cart();

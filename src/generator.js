@@ -175,7 +175,7 @@ const MenuGen = (function () {
       id: c.id || uid(), name: c.name || '', description: c.description || '', schedule: normWin(c.schedule),
       items: (c.items || []).map(i => ({
         id: i.id || uid(), name: i.name || '', description: i.description || '', price: i.price == null ? '' : i.price,
-        image: i.image || null, featured: !!i.featured, soldOut: !!i.soldOut, hidden: !!i.hidden,
+        image: i.image || null, model: i.model || null, modelIos: i.modelIos || null, featured: !!i.featured, soldOut: !!i.soldOut, hidden: !!i.hidden,
         variants: (i.variants || []).map(v => ({ label: v.label || '', price: v.price == null ? '' : v.price })),
         addons: (i.addons || []).map(a => ({ label: a.label || '', price: a.price == null ? '' : a.price })),
         tags: (i.tags || []).filter(t => TAGS[t])
@@ -309,6 +309,15 @@ a.chip:hover{border-color:var(--primary)}
 .add{background:transparent;color:var(--primary);border:1.5px solid var(--primary);padding:6px 14px;transition:background .15s,color .15s}
 .add:hover,.add.ok{background:var(--primary);color:var(--on-primary)}
 .thumb{width:98px;height:98px;object-fit:cover;border-radius:calc(var(--radius) - 4px);flex:none;background:var(--line)}
+.thumb3d{position:relative;flex:none;padding:0;border:0;background:none;cursor:pointer;display:block;border-radius:calc(var(--radius) - 4px);line-height:0}
+.layout-grid .thumb3d{width:100%}
+.b3d{position:absolute;left:6px;top:6px;background:var(--primary);color:#fff;font:700 .68rem/1 var(--fb,inherit);letter-spacing:.04em;padding:4px 7px;border-radius:99px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.pill3d{margin-top:8px;border:1px solid var(--primary);color:var(--primary);background:none;border-radius:99px;padding:6px 12px;font:600 .82rem/1 inherit;cursor:pointer}
+.v3d{width:100%;height:min(62vh,420px);background:var(--line);border-radius:14px;--poster-color:transparent}
+.v3d-ar{width:100%;margin-top:12px;border:0;border-radius:99px;padding:13px;background:var(--primary);color:#fff;font:700 1rem/1 inherit;cursor:pointer}
+.v3d-ar[hidden]{display:none}
+.v3d-hint{margin-top:8px;font-size:.8rem;opacity:.7;text-align:center}
+.v3d-msg{padding:40px 12px;text-align:center;opacity:.75}
 .layout-grid .items{grid-template-columns:repeat(2,1fr)}
 .layout-grid .item{flex-direction:column-reverse;justify-content:flex-end;padding:0;overflow:hidden;gap:0}
 .layout-grid .thumb{width:100%;height:auto;aspect-ratio:4/3;border-radius:0}
@@ -455,7 +464,9 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     const reviewUrl = safeReview(o.googleReview); // link de avaliação do Google (só domínios do Google, https)
     // mais pedidos do restaurante (calculados no servidor; só com histórico suficiente)
     const pop = opts.populares && opts.populares.qtd && Number(opts.populares.total) >= 30 ? opts.populares : null;
+    const m3d = {}; // pratos com modelo 3D: id -> { m: glb, i: usdz, p: foto, n: nome }
     const menuData = {
+      m3d,
       tz: c.tz, off: o.offHours === 'hide' ? 'hide' : 'show',
       sched: (hasSched && o.showOpenStatus) ? c.schedule.map(s => ({ o: s.open ? 1 : 0, f: s.from, t: s.to })) : [],
       items: {},
@@ -531,12 +542,17 @@ footer a{text-decoration:underline;text-underline-offset:3px}
         const p = parsePrice(a.price);
         return esc(String(a.label).trim()) + (isNaN(p) || !p ? '' : ' +' + esc(fmtPrice(p)));
       }).join(' · ') + '</p>' : '';
-      const im = (layout !== 'text' && it.image)
+      const imTag = (layout !== 'text' && it.image)
         ? '<img class="thumb" loading="lazy" alt="' + esc(it.name) + '" src="' + esc(img(it.image, 'produtos/' + slugify(it.name))) + '">' : '';
+      const has3d = !!it.model;
+      if (has3d) m3d[it.id] = { m: img(it.model, 'modelos/' + slugify(it.name)), i: it.modelIos ? img(it.modelIos, 'modelos/' + slugify(it.name)) : '', p: it.image ? img(it.image, 'produtos/' + slugify(it.name)) : '', n: it.name };
+      const im = has3d && imTag
+        ? '<button type="button" class="thumb3d" data-3d="' + esc(it.id) + '" aria-label="Ver ' + esc(it.name) + ' em 3D">' + imTag + '<span class="b3d">3D</span></button>' : imTag;
+      const pill3d = has3d && !imTag ? '<button type="button" class="pill3d" data-3d="' + esc(it.id) + '">Ver em 3D</button>' : '';
       const search = norm(it.name + ' ' + it.description + ' ' + it.tags.map(k => TAGS[k][1]).join(' '));
       return '<article class="item' + (it.featured ? ' featured' : '') + (it.soldOut ? ' soldout' : '') + '" data-s="' + esc(search) + '">' +
         '<div class="item-body"><h3>' + esc(it.name) + (it.featured ? '<span class="badge">Destaque</span>' : '') + (hot.has(it.id) ? '<span class="badge hot">🔥 Mais pedido</span>' : '') + '</h3>' +
-        tagsHtml + (it.description ? '<p class="desc">' + escBr(it.description) + '</p>' : '') + addsHtml + priceHtml + btn + '</div>' + im + '</article>';
+        tagsHtml + (it.description ? '<p class="desc">' + escBr(it.description) + '</p>' : '') + addsHtml + priceHtml + pill3d + btn + '</div>' + im + '</article>';
     };
 
     const tabsHtml = cats.length > 1

@@ -77,8 +77,8 @@
   const setStatus = s => { $('#status').textContent = s; };
 
   /* ---------- arquivos do site (ZIP e pasta usam o mesmo conjunto) ---------- */
-  const EXT = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/svg+xml': 'svg', 'image/gif': 'gif' };
-  const MIME = { webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', gif: 'image/gif' };
+  const EXT = { 'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/svg+xml': 'svg', 'image/gif': 'gif', 'model/gltf-binary': 'glb', 'model/vnd.usdz+zip': 'usdz' };
+  const MIME = { webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', gif: 'image/gif', glb: 'model/gltf-binary', usdz: 'model/vnd.usdz+zip' };
 
   function makeResolver() {
     const map = new Map(), used = new Set();
@@ -99,7 +99,9 @@
     const c = clone(data);
     if (c.logo) c.logo = resolve(c.logo, 'logo');
     if (c.hero) c.hero = resolve(c.hero, 'hero');
-    c.categories.forEach(cat => cat.items.forEach(it => { if (it.image) it.image = resolve(it.image, 'produtos/' + MenuGen.slugify(it.name)); }));
+    c.categories.forEach(cat => cat.items.forEach(it => { if (it.image) it.image = resolve(it.image, 'produtos/' + MenuGen.slugify(it.name));
+      if (it.model) it.model = resolve(it.model, 'modelos/' + MenuGen.slugify(it.name));
+      if (it.modelIos) it.modelIos = resolve(it.modelIos, 'modelos/' + MenuGen.slugify(it.name) + '-ios'); }));
     return c;
   }
   function readme(r) {
@@ -144,7 +146,7 @@
       return 'data:' + (MIME[p.split('.').pop().toLowerCase()] || 'image/jpeg') + ';base64,' + b;
     };
     data.logo = await load(data.logo); data.hero = await load(data.hero);
-    for (const c of data.categories || []) for (const i of c.items || []) i.image = await load(i.image);
+    for (const c of data.categories || []) for (const i of c.items || []) { i.image = await load(i.image); i.model = await load(i.model); i.modelIos = await load(i.modelIos); }
     return data;
   }
 
@@ -583,7 +585,7 @@
   }
   const hostRpc = (n, a) => makeApi(HOST.url, HOST.key)(n, Object.assign({ p_token: HOST.token }, a || {}));
   const sha12 = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), x => x.toString(16).padStart(2, '0')).join('').slice(0, 12);
-  const IMG_MIME = { webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif' };
+  const IMG_MIME = { webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', svg: 'image/svg+xml', avif: 'image/avif', glb: 'model/gltf-binary', usdz: 'model/vnd.usdz+zip' };
 
   async function publicar() {
     const slug = HOST ? HOST.slug : cur.options.plataforma.slug, r = HOST ? {} : (PLAT.rests || []).find(x => x.slug === slug);
@@ -603,7 +605,7 @@
     }
     const sub = p => (p && urlOf[p]) || p;
     lite.logo = sub(lite.logo); lite.hero = sub(lite.hero);
-    lite.categories.forEach(cat => cat.items.forEach(it => { it.image = sub(it.image); }));
+    lite.categories.forEach(cat => cat.items.forEach(it => { it.image = sub(it.image); it.model = sub(it.model); it.modelIos = sub(it.modelIos); }));
     lite.options.siteUrl = ''; lite.options.domain = ''; lite.folder = '';
     const itens = MenuGen.systemMenu(cur);
     if (HOST) await hostRpc('admin_publicar', { p_modelo: lite, p_itens: itens });
@@ -693,7 +695,7 @@
   }
 
   /* ---------- painel: Cardápio ---------- */
-  function newItem() { return { id: MenuGen.uid(), name: '', description: '', price: '', image: null, featured: false, soldOut: false, hidden: false, variants: [], addons: [], tags: [] }; }
+  function newItem() { return { id: MenuGen.uid(), name: '', description: '', price: '', image: null, model: null, modelIos: null, featured: false, soldOut: false, hidden: false, variants: [], addons: [], tags: [] }; }
 
   function miniImage(it) {
     const input = h('input', { type: 'file', accept: 'image/*', hidden: true });
@@ -708,6 +710,47 @@
     input.addEventListener('change', () => take(input.files[0]));
     dropTarget(box, take);
     draw();
+    return box;
+  }
+
+  /* ---------- modelo 3D (escaneado com app: Polycam, Scaniverse, Kiri...) ---------- */
+  const MODEL_MAX = 20 * 1024 * 1024;
+  const fmtMB = n => (n / 1048576).toFixed(1).replace('.', ',') + ' MB';
+  const dataUrlBytes = u => Math.floor(((u.split(',')[1] || '').length * 3) / 4);
+  async function fileToModelDataURL(file, kind) {
+    if (file.size > MODEL_MAX) throw new Error('Arquivo muito grande (' + fmtMB(file.size) + '). O limite é 20 MB — reduza a qualidade/texturas no app de escaneamento.');
+    const buf = await file.arrayBuffer(), head = new Uint8Array(buf, 0, 4);
+    if (kind === 'model') {
+      if (!/\.glb$/i.test(file.name) || String.fromCharCode(...head) !== 'glTF') throw new Error('Use um arquivo .glb (exporte como "GLB" no app).');
+    } else if (!/\.usdz$/i.test(file.name) || head[0] !== 0x50 || head[1] !== 0x4b) throw new Error('Use um arquivo .usdz.');
+    const type = kind === 'model' ? 'model/gltf-binary' : 'model/vnd.usdz+zip';
+    return await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok('data:' + type + ';base64,' + String(f.result).split(',')[1]); f.onerror = () => no(new Error('Não consegui ler o arquivo')); f.readAsDataURL(new Blob([buf], { type })); });
+  }
+  function model3dField(it) {
+    const box = h('div', { class: 'f' });
+    const row = (kind, label, accept, hint) => {
+      const input = h('input', { type: 'file', accept, hidden: true });
+      const line = h('div', { class: 'btnrow' });
+      const draw = () => {
+        const v = it[kind];
+        line.replaceChildren(
+          h('button', { class: 'btn sm', type: 'button', onclick: () => input.click() }, v ? 'Trocar ' + label : '+ ' + label),
+          v ? h('span', { class: 'muted' }, /^data:/.test(v) ? fmtMB(dataUrlBytes(v)) : 'online') : null,
+          v ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { it[kind] = null; changed(); draw(); } }, 'Remover') : null,
+          input);
+      };
+      input.addEventListener('click', e => e.stopPropagation());
+      input.addEventListener('change', async () => {
+        const file = input.files[0]; input.value = '';
+        if (!file) return;
+        try { it[kind] = await fileToModelDataURL(file, kind); changed(); draw(); toast('Modelo 3D carregado (' + fmtMB(file.size) + ')'); } catch (e) { toast(e.message); }
+      });
+      draw();
+      return h('div', {}, line, hint ? h('small', { class: 'muted' }, hint) : null);
+    };
+    box.append(h('span', { class: 'f-l' }, 'Modelo 3D / AR'),
+      row('model', 'modelo 3D (.glb)', '.glb,model/gltf-binary', 'Escaneie o prato com um app (Polycam, Scaniverse, Kiri Engine) e exporte como GLB, até 20 MB. O cardápio mostra o selo 3D e o botão "Ver na sua mesa".'),
+      it.model ? row('modelIos', 'versão iPhone (.usdz, opcional)', '.usdz', 'Opcional. Sem ela, o iPhone gera a versão de AR automaticamente a partir do GLB.') : null);
     return box;
   }
 
@@ -764,7 +807,7 @@
       h('span', { style: 'flex:1' }),
       h('button', { class: 'icon', title: 'Excluir produto', onclick: () => { cat.items.splice(ii, 1); changed(); renderPanel(true); } }, '🗑'));
 
-    const more = h('div', { class: 'imore', hidden: !open }, desc, varsWrap, addonsWrap, tags, h('div', { class: 'flags' }, flag('featured', '★ Destaque'), flag('soldOut', 'Esgotado'), flag('hidden', 'Ocultar do cardápio')), acts);
+    const more = h('div', { class: 'imore', hidden: !open }, desc, model3dField(it), varsWrap, addonsWrap, tags, h('div', { class: 'flags' }, flag('featured', '★ Destaque'), flag('soldOut', 'Esgotado'), flag('hidden', 'Ocultar do cardápio')), acts);
     return h('div', { class: 'item', dataset: { id: it.id } }, row, more);
   }
 

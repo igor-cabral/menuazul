@@ -1668,10 +1668,10 @@ exception when others then
 end
 $cron$;
 
--- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
+-- Caminho de arquivo aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem ou modelo 3D (glb/usdz)>
 create or replace function _foto_ok(p_nome text) returns boolean
 language sql stable security definer set search_path = public, pg_temp as $$
-  select coalesce(p_nome ~ '^[a-z0-9][a-z0-9-]*/[0-9a-f]{12}\.(webp|jpe?g|png|gif|avif)$', false)
+  select coalesce(p_nome ~ '^[a-z0-9][a-z0-9-]*/[0-9a-f]{12}\.(webp|jpe?g|png|gif|avif|glb|usdz)$', false)
     and exists (select 1 from restaurantes r where r.ativo and r.slug = split_part(p_nome, '/', 1));
 $$;
 
@@ -1724,7 +1724,7 @@ to authenticated;
 do $$
 begin
   if exists (select 1 from pg_namespace where nspname = 'storage') then
-    execute $q$insert into storage.buckets (id, name, public, file_size_limit) values ('cardapios', 'cardapios', true, 5242880) on conflict (id) do update set public = true, file_size_limit = 5242880$q$;
+    execute $q$insert into storage.buckets (id, name, public, file_size_limit) values ('cardapios', 'cardapios', true, 20971520) on conflict (id) do update set public = true, file_size_limit = 20971520$q$;
     execute 'drop policy if exists "cardapios_envio_painel" on storage.objects';
     execute $q$create policy "cardapios_envio_painel" on storage.objects for insert to anon, authenticated
       with check (bucket_id = 'cardapios' and public._foto_ok(name))$q$;
