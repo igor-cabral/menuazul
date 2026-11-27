@@ -10,5 +10,7 @@
     // Rotas como /admin, /restaurante e /restaurante/codigo não são arquivos: navegações caem no index.html.
     // Pedidos que NÃO são navegação (script, imagem, json) vão para worker/index.js, que responde 404.
     "not_found_handling": "single-page-application"
-  }
+  },
+  // exigido pelo build de branches do Cloudflare (`wrangler preview`); pode ficar vazio
+  "previews": {}
 }
