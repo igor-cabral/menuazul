@@ -3,7 +3,8 @@
   // Worker só com arquivos estáticos (sem código de servidor). O nome precisa ser igual ao do Worker já criado no Cloudflare.
   "name": "menuazul",
   "main": "./worker/index.js", // só atende pedidos sem arquivo que NÃO são navegação: devolve 404 (ver o arquivo)
-  "compatibility_date": "2026-10-01",
+    "compatibility_date": "2026-10-01",
+  "previews": {},
   "assets": {
     // Pasta GERADA por `npm run build:web` (a pasta web/ é só o código-fonte, com marcadores não preenchidos).
     "directory": "./dist",
