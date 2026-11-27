@@ -311,10 +311,19 @@ a.chip:hover{border-color:var(--primary)}
 .thumb{width:98px;height:98px;object-fit:cover;border-radius:calc(var(--radius) - 4px);flex:none;background:var(--line)}
 .thumb3d{position:relative;flex:none;padding:0;border:0;background:none;cursor:pointer;display:block;border-radius:calc(var(--radius) - 4px);line-height:0}
 .layout-grid .thumb3d{width:100%}
-.b3d{position:absolute;left:6px;top:6px;background:var(--primary);color:#fff;font:700 .68rem/1 var(--fb,inherit);letter-spacing:.04em;padding:4px 7px;border-radius:99px;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.thumb3d{overflow:hidden;background:radial-gradient(circle at 50% 38%,color-mix(in srgb,var(--bg),#fff 45%),var(--line))}
+.b3d{position:absolute;left:6px;bottom:6px;z-index:2;display:inline-flex;align-items:center;gap:4px;background:var(--primary);color:var(--on-primary,#fff);font:700 .74rem/1 var(--fb,inherit);letter-spacing:.04em;padding:6px 10px;border-radius:99px;box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.thumb3d model-viewer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .5s;--poster-color:transparent;background:transparent}
+.thumb3d.live model-viewer{opacity:1}
+.thumb3d.live .thumb{opacity:0}
+.thumb3d .thumb{transition:opacity .5s}
+.hint3d{display:flex;align-items:center;gap:8px;margin:0 0 14px;padding:10px 14px;border-radius:12px;background:color-mix(in srgb,var(--primary) 10%,var(--bg));border:1px solid color-mix(in srgb,var(--primary) 30%,var(--line));font-size:.88rem;line-height:1.3}
+.hint3d svg{flex:none;width:20px;height:20px;color:var(--primary)}
 .pill3d{margin-top:8px;border:1px solid var(--primary);color:var(--primary);background:none;border-radius:99px;padding:6px 12px;font:600 .82rem/1 inherit;cursor:pointer}
 .v3d{width:100%;height:min(62vh,420px);background:var(--line);border-radius:14px;--poster-color:transparent}
-.v3d-ar{width:100%;margin-top:12px;border:0;border-radius:99px;padding:13px;background:var(--primary);color:#fff;font:700 1rem/1 inherit;cursor:pointer}
+.v3d-add,.v3d-ar{display:block;width:100%;margin-top:12px;border-radius:99px;padding:13px;font:700 1rem/1 inherit;cursor:pointer}
+.v3d-add{border:2px solid var(--primary);background:var(--primary);color:var(--on-primary,#fff)}
+.v3d-ar{border:2px solid var(--primary);background:none;color:var(--primary)}
 .v3d-ar[hidden]{display:none}
 .v3d-hint{margin-top:8px;font-size:.8rem;opacity:.7;text-align:center}
 .v3d-msg{padding:40px 12px;text-align:center;opacity:.75}
@@ -446,6 +455,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     const catStyle = pick(t.catStyle, CATS, 'plain');
     const mesa = opts.mesa && opts.mesa.url && opts.mesa.codigo ? opts.mesa : null; // modo mesa (só no site da plataforma)
     const cartOn = !!(o.cartEnabled && (wa || mesa));
+    const rast = opts.rastreio && opts.rastreio.url && opts.rastreio.slug ? opts.rastreio : (mesa ? { url: mesa.url, key: mesa.key, slug: mesa.slug } : null); // contagem de uso do 3D/AR (só no site publicado; a prévia do editor não conta)
 
     const name = d.name || 'Cardápio';
     const title = name + (d.slogan ? ' — ' + d.slogan : ' — Cardápio');
@@ -467,6 +477,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
     const m3d = {}; // pratos com modelo 3D: id -> { m: glb, i: usdz, p: foto, n: nome }
     const menuData = {
       m3d,
+      t3: rast ? { url: String(rast.url).replace(/\/+$/, ''), key: rast.key, slug: rast.slug } : null,
       tz: c.tz, off: o.offHours === 'hide' ? 'hide' : 'show',
       sched: (hasSched && o.showOpenStatus) ? c.schedule.map(s => ({ o: s.open ? 1 : 0, f: s.from, t: s.to })) : [],
       items: {},
@@ -547,7 +558,7 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       const has3d = !!it.model;
       if (has3d) m3d[it.id] = { m: img(it.model, 'modelos/' + slugify(it.name)), i: it.modelIos ? img(it.modelIos, 'modelos/' + slugify(it.name)) : '', p: it.image ? img(it.image, 'produtos/' + slugify(it.name)) : '', n: it.name };
       const im = has3d && imTag
-        ? '<button type="button" class="thumb3d" data-3d="' + esc(it.id) + '" aria-label="Ver ' + esc(it.name) + ' em 3D">' + imTag + '<span class="b3d">3D</span></button>' : imTag;
+        ? '<button type="button" class="thumb3d" data-3d="' + esc(it.id) + '" aria-label="Ver ' + esc(it.name) + ' em 3D">' + imTag + '<span class="b3d"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 21 7.5v9l-9 5-9-5v-9z"/><path d="M3 7.5l9 5 9-5M12 12.5v9"/></svg>3D</span></button>' : imTag;
       const pill3d = has3d && !imTag ? '<button type="button" class="pill3d" data-3d="' + esc(it.id) + '">Ver em 3D</button>' : '';
       const search = norm(it.name + ' ' + it.description + ' ' + it.tags.map(k => TAGS[k][1]).join(' '));
       return '<article class="item' + (it.featured ? ' featured' : '') + (it.soldOut ? ' soldout' : '') + '" data-s="' + esc(search) + '">' +
@@ -607,13 +618,14 @@ footer a{text-decoration:underline;text-underline-offset:3px}
       '<body class="layout-' + layout + ' hd-' + header + ' cs-' + cardStyle + ' ct-' + catStyle + '">' +
       headerHtml + '\n' + tabsHtml +
       '<main class="wrap">' +
+      (Object.keys(m3d).length ? '<p class="hint3d"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 21 7.5v9l-9 5-9-5v-9z"/><path d="M3 7.5l9 5 9-5M12 12.5v9"/></svg><span>Veja os pratos em <b>3D</b> e na sua mesa: toque nos pratos com o selo 3D.</span></p>' : '') +
       (o.showSearch && cats.length ? '<div class="search"><input id="q" type="search" placeholder="Buscar no cardápio…" aria-label="Buscar no cardápio" autocomplete="off"></div>' : '') +
       (cats.length ? sections + '<p class="none" id="none" hidden>Nenhum item encontrado.</p>' : '<p class="empty">Cardápio em breve.</p>') +
       '</main>\n' +
       '<footer>' + (o.footerText ? '<p>' + escBr(o.footerText) + '</p>' : '') + reviewHtml + credit + platformBand + '</footer>' +
       ((!cartOn && o.orderButton && wa) ? '<a class="fab" href="' + orderLink(o.orderMessage) + '" target="_blank" rel="noopener">' + ICON.wa + 'Fazer pedido</a>' : '') +
       '<script type="application/json" id="menu-data">' + dataJson + '<\/script>' +
-      '<script>' + (mesa ? 'var makeApi=' + makeApi.toString() + ';' : '') + '(' + siteRuntime.toString() + ')();<\/script></body></html>';
+      '<script>' + (mesa || rast ? 'var makeApi=' + makeApi.toString() + ';' : '') + '(' + siteRuntime.toString() + ')();<\/script></body></html>';
   }
 
 

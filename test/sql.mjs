@@ -109,8 +109,24 @@ console.log('5b) editor no painel: admin lê e publica só o próprio cardápio'
   await good('admin_publicar', { p_token: tokA, p_modelo: { name: 'Pizza Boa', theme: { primary: '#d00' } }, p_itens: itA }); // volta ao estado do teste
   const foto = async n => (await be.query('select _foto_ok($1) as ok', [n])).rows[0].ok;
   ok(await foto('pizza-boa/0123456789ab.webp'), 'caminho de foto válido');
-  ok(await foto('pizza-boa/0123456789ab.glb') && await foto('pizza-boa/0123456789ab.usdz'), 'caminho de modelo 3D (glb/usdz) válido');
-  ok(!(await foto('pizza-boa/0123456789ab.obj')) && !(await foto('inexistente/0123456789ab.glb')), 'modelo 3D: extensão e slug inválidos recusados');
+  ok(!(await foto('pizza-boa/0123456789ab.glb')), 'bucket de fotos NÃO aceita modelo 3D');
+  const modelo = async n => (await be.query('select _modelo_ok($1) as ok', [n])).rows[0].ok;
+  ok(await modelo('pizza-boa/0123456789ab.glb') && await modelo('pizza-boa/0123456789ab.usdz'), 'caminho de modelo 3D (glb/usdz) válido');
+  ok(!(await modelo('pizza-boa/0123456789ab.webp')) && !(await modelo('pizza-boa/0123456789ab.obj')) && !(await modelo('inexistente/0123456789ab.glb')) && !(await modelo('pizza-boa/a/0123456789ab.glb')), 'modelo 3D: imagem, extensão, slug e subpasta inválidos recusados');
+  // contador de uso do 3D/AR (anon, sem login): só conta item que existe no cardápio do restaurante ativo
+  const itId = itA[0].id;
+  await good('publico_3d_evento', { p_slug: 'pizza-boa', p_item: itId, p_tipo: 'abrir' });
+  await good('publico_3d_evento', { p_slug: 'pizza-boa', p_item: itId, p_tipo: 'abrir' });
+  await good('publico_3d_evento', { p_slug: 'pizza-boa', p_item: itId, p_tipo: 'ar' });
+  await good('publico_3d_evento', { p_slug: 'pizza-boa', p_item: 'nao-existe', p_tipo: 'abrir' });
+  await good('publico_3d_evento', { p_slug: 'burger', p_item: itId, p_tipo: 'abrir' });
+  await good('publico_3d_evento', { p_slug: 'pizza-boa', p_item: itId, p_tipo: 'qualquer' });
+  const u3 = (await be.query('select item_id, aberturas, ar from uso_3d where restaurante_id = $1', [A])).rows;
+  ok(u3.length === 1 && u3[0].aberturas === 2 && u3[0].ar === 1, '3D: 2 aberturas e 1 AR contados; item inexistente e tipo inválido ignorados');
+  const u3b = (await be.query('select item_id, aberturas, ar from uso_3d where restaurante_id = $1', [B])).rows;
+  ok(u3b.length === 1 && u3b[0].aberturas === 1 && u3b[0].ar === 0, '3D: cada restaurante conta só os seus eventos (mesmo id de item em ambos)');
+  ok(/permission denied/.test(await be.db.exec('set role anon').then(() => be.db.query('select * from uso_3d')).then(() => 'permitido', e => e.message)), '3D: anon não lê a tabela de contagem');
+  await be.db.exec('reset role');
   ok(!(await foto('inexistente/0123456789ab.webp')) && !(await foto('pizza-boa/foto.webp')) && !(await foto('pizza-boa/0123456789ab.svg')) && !(await foto('pizza-boa/a/0123456789ab.png')), 'caminhos inválidos recusados (slug, nome, svg, subpasta)');
 }
 

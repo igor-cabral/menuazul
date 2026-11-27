@@ -77,6 +77,12 @@ Teste local (mesmo runtime do Cloudflare): `npm run build:web && npx wrangler de
 
 Mudou preço/foto? Edite no editor e publique de novo. O restaurante marca "esgotado" sozinho no painel dele.
 
+## 3D / AR dos pratos
+- **Banco:** rode de novo o `sql/schema.sql` (é seguro). Ele cria o bucket público `modelos` (até 20 MB, só `.glb`/`.usdz`) e a tabela `uso_3d`. O bucket `cardapios` continua só com fotos (5 MB).
+- **Modelos:** no editor, abra o item > "Modelo 3D / AR" e envie o `.glb` escaneado. Texturas grandes são reduzidas automaticamente no navegador (meta de 5 MB); a geometria não é alterada.
+- **Visualizador:** o `model-viewer` carrega do CDN do Google. Para hospedar no seu domínio, coloque `model-viewer.min.js` em `web/vendor/` e copie essa pasta para o `dist/` em `build-web.mjs` (o site tenta `/vendor/model-viewer.min.js` antes do CDN).
+- **Uso:** o painel do restaurante > Relatórios mostra "Pratos mais vistos em 3D" (aberturas e toques em "Ver na sua mesa").
+
 ## Operação
 - **Bloquear**: `/admin` → Bloquear. Todos perdem acesso na hora (equipe, cardápio e clientes) e nada é apagado.
 - **Esqueceu a senha**: `/admin` → Equipe → Nova senha.

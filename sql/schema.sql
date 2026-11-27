@@ -1280,7 +1280,12 @@ begin
         select coalesce(ca.nome, l.item_id) as nome, count(*)::int as vezes
           from esgotado_log l left join cardapio ca on ca.restaurante_id = l.restaurante_id and ca.id = l.item_id
          where l.restaurante_id = s.restaurante_id and l.esgotado and (l.em at time zone v_fuso)::date between v_de and v_ate
-         group by 1 order by 2 desc, 1 limit 10) r));
+         group by 1 order by 2 desc, 1 limit 10) r),
+    'uso_3d', (select coalesce(jsonb_agg(r), '[]'::jsonb) from (
+        select coalesce(ca.nome, u.item_id) as nome, sum(u.aberturas)::int as aberturas, sum(u.ar)::int as ar
+          from uso_3d u left join cardapio ca on ca.restaurante_id = u.restaurante_id and ca.id = u.item_id
+         where u.restaurante_id = s.restaurante_id and u.dia between v_de and v_ate
+         group by u.item_id, ca.nome order by 2 desc, 3 desc, 1 limit 10) r));
 end $$;
 
 -- ---------- setores de KDS (admin) ----------
@@ -1668,12 +1673,44 @@ exception when others then
 end
 $cron$;
 
--- Caminho de arquivo aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem ou modelo 3D (glb/usdz)>
+-- Caminho de foto aceito no envio pelo painel: <slug de restaurante ativo>/<hash 12 hex>.<imagem>
 create or replace function _foto_ok(p_nome text) returns boolean
 language sql stable security definer set search_path = public, pg_temp as $$
-  select coalesce(p_nome ~ '^[a-z0-9][a-z0-9-]*/[0-9a-f]{12}\.(webp|jpe?g|png|gif|avif|glb|usdz)$', false)
+  select coalesce(p_nome ~ '^[a-z0-9][a-z0-9-]*/[0-9a-f]{12}\.(webp|jpe?g|png|gif|avif)$', false)
     and exists (select 1 from restaurantes r where r.ativo and r.slug = split_part(p_nome, '/', 1));
 $$;
+
+-- Caminho de modelo 3D aceito no envio pelo painel (bucket "modelos"): <slug de restaurante ativo>/<hash 12 hex>.glb|usdz
+create or replace function _modelo_ok(p_nome text) returns boolean
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(p_nome ~ '^[a-z0-9][a-z0-9-]*/[0-9a-f]{12}\.(glb|usdz)$', false)
+    and exists (select 1 from restaurantes r where r.ativo and r.slug = split_part(p_nome, '/', 1));
+$$;
+
+-- ---------- uso do 3D/AR: contador por prato e por dia (agregado, sem dados do cliente) ----------
+create table if not exists uso_3d (
+  restaurante_id uuid not null references restaurantes(id) on delete cascade,
+  item_id text not null,
+  dia date not null,
+  aberturas int not null default 0,
+  ar int not null default 0,
+  primary key (restaurante_id, item_id, dia)
+);
+
+-- o cardápio chama esta função quando o cliente abre o 3D ('abrir') ou toca em "Ver na sua mesa" ('ar'); ignora em silêncio o que não bate
+create or replace function publico_3d_evento(p_slug text, p_item text, p_tipo text) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare r restaurantes;
+begin
+  if p_tipo is null or p_tipo not in ('abrir', 'ar') then return; end if;
+  select * into r from restaurantes where slug = lower(coalesce(p_slug, '')) and ativo;
+  if not found then return; end if;
+  if not exists (select 1 from cardapio where restaurante_id = r.id and id = p_item) then return; end if;
+  insert into uso_3d (restaurante_id, item_id, dia, aberturas, ar)
+  values (r.id, p_item, (now() at time zone r.fuso)::date, (p_tipo = 'abrir')::int, (p_tipo = 'ar')::int)
+  on conflict (restaurante_id, item_id, dia) do update
+    set aberturas = uso_3d.aberturas + excluded.aberturas, ar = uso_3d.ar + excluded.ar;
+end $$;
 
 -- ---------- permissões ----------
 alter table plataforma_admins enable row level security;
@@ -1689,6 +1726,7 @@ alter table clientes enable row level security;
 alter table pedidos enable row level security;
 alter table pedido_itens enable row level security;
 alter table pagamentos enable row level security;
+alter table uso_3d enable row level security;
 
 revoke all on all tables in schema public from public, anon, authenticated;
 revoke all on all sequences in schema public from public, anon, authenticated;
@@ -1705,7 +1743,7 @@ grant execute on function
   admin_mesas(uuid), admin_criar_mesas(uuid, int), admin_salvar_mesa(uuid, uuid, text, boolean), admin_apagar_mesa(uuid, uuid),
   admin_novo_codigo_mesa(uuid, uuid), admin_config_get(uuid), admin_config_set(uuid, numeric, boolean),
   admin_usuarios(uuid), admin_usuario_salvar(uuid, uuid, text, text, text, text, boolean),
-  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), admin_cobranca(uuid), admin_termos_status(uuid), admin_termos_aceitar(uuid, text), _foto_ok(text),
+  admin_itens(uuid), admin_item_esgotado(uuid, text, boolean), admin_cardapio_get(uuid), admin_publicar(uuid, jsonb, jsonb), admin_relatorio(uuid, date, date), admin_cobranca(uuid), admin_termos_status(uuid), admin_termos_aceitar(uuid, text), _foto_ok(text), _modelo_ok(text), publico_3d_evento(text, text, text),
   publico_chamar_garcom(uuid), publico_populares(text), admin_setores(uuid), admin_setor_salvar(uuid, uuid, text), admin_setor_padrao(uuid, uuid), admin_setor_excluir(uuid, uuid), admin_setor_itens(uuid, jsonb), admin_usuario_setor(uuid, text, uuid), garcom_mesas(uuid, text), garcom_mesa(uuid, uuid, text), garcom_itens(uuid), garcom_pedir(uuid, uuid, jsonb, text), garcom_entregar(uuid, uuid), garcom_atender(uuid, uuid)
 to anon, authenticated;
 
@@ -1724,7 +1762,7 @@ to authenticated;
 do $$
 begin
   if exists (select 1 from pg_namespace where nspname = 'storage') then
-    execute $q$insert into storage.buckets (id, name, public, file_size_limit) values ('cardapios', 'cardapios', true, 20971520) on conflict (id) do update set public = true, file_size_limit = 20971520$q$;
+    execute $q$insert into storage.buckets (id, name, public, file_size_limit) values ('cardapios', 'cardapios', true, 5242880) on conflict (id) do update set public = true, file_size_limit = 5242880$q$;
     execute 'drop policy if exists "cardapios_envio_painel" on storage.objects';
     execute $q$create policy "cardapios_envio_painel" on storage.objects for insert to anon, authenticated
       with check (bucket_id = 'cardapios' and public._foto_ok(name))$q$;
@@ -1732,6 +1770,15 @@ begin
     execute $q$create policy "cardapios_escrita" on storage.objects for all to authenticated
       using (bucket_id = 'cardapios' and exists (select 1 from public.plataforma_admins where user_id = auth.uid()))
       with check (bucket_id = 'cardapios' and exists (select 1 from public.plataforma_admins where user_id = auth.uid()))$q$;
+    -- modelos 3D (.glb/.usdz): bucket próprio, até 20 MB, mesmas regras das fotos
+    execute $q$insert into storage.buckets (id, name, public, file_size_limit) values ('modelos', 'modelos', true, 20971520) on conflict (id) do update set public = true, file_size_limit = 20971520$q$;
+    execute 'drop policy if exists "modelos_envio_painel" on storage.objects';
+    execute $q$create policy "modelos_envio_painel" on storage.objects for insert to anon, authenticated
+      with check (bucket_id = 'modelos' and public._modelo_ok(name))$q$;
+    execute 'drop policy if exists "modelos_escrita" on storage.objects';
+    execute $q$create policy "modelos_escrita" on storage.objects for all to authenticated
+      using (bucket_id = 'modelos' and exists (select 1 from public.plataforma_admins where user_id = auth.uid()))
+      with check (bucket_id = 'modelos' and exists (select 1 from public.plataforma_admins where user_id = auth.uid()))$q$;
   end if;
 end $$;
 
